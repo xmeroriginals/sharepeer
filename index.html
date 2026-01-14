@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SharePeer - Fast, Secure & Direct P2P File Transfer</title>
+    <meta name="description"
+        content="SharePeer is a ultra-fast, secure, and private peer-to-peer file sharing tool that works directly in your browser. No middleman, no size limits, and no storage.">
+    <meta name="keywords"
+        content="file sharing, p2p, peer to peer, secure file transfer, browser transfer, sharepeer, direct download, no limit sharing">
+    <meta name="author" content="XmerOriginals">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="https://sharepeer.xmer.net">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://sharepeer.xmer.net">
+    <meta property="og:title" content="SharePeer - Fast, Secure & Direct P2P File Transfer">
+    <meta property="og:description"
+        content="Ultra-fast, secure, and private P2P file sharing directly in your browser. No intermediaries, no size limits.">
+    <meta property="og:image" content="resources/icons/SharePeerLogo.png">
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="https://sharepeer.xmer.net">
+    <meta property="twitter:title" content="SharePeer - Fast, Secure & Direct P2P File Transfer">
+    <meta property="twitter:description"
+        content="Ultra-fast, secure, and private P2P file sharing directly in your browser. No intermediaries, no size limits.">
+    <meta property="twitter:image" content="resources/icons/SharePeerLogo.png">
+    <link rel="icon" type="image/png" href="resources/icons/SharePeerLogo.png">
+    <link rel="apple-touch-icon" href="resources/icons/SharePeerLogo.png">
+
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "SharePeer",
+      "operatingSystem": "Web Browser",
+      "applicationCategory": "Utility",
+      "offers": {
+        "@type": "Offer",
+        "price": "0"
+      },
+      "description": "Secure, browser-based peer-to-peer file sharing without intermediaries or file size limits."
+    }
+    </script>
+
+    <script src="lib/tailwind.js"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        'sans': ['Questrial', 'sans-serif'],
+                        'display': ['Space Grotesk', 'sans-serif'],
+                        'mono': ['Space Grotesk', 'monospace'],
+                    },
+                    colors: {
+                        brand: {
+                            dark: '#0f172a',
+                            light: '#e2e8f0',
+                            accent: '#38bdf8',
+                            secondary: '#818cf8',
+                            surface: 'rgba(30, 41, 59, 0.7)',
+                        }
+                    },
+                    animation: {
+                        'pulse-slow': 'pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                    },
+                }
+            }
+        }
+    </script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        @font-face {
+            font-family: 'Space Grotesk';
+            src: url('resources/fonts/SpaceGrotesk-Regular.ttf') format('truetype');
+            font-weight: normal;
+            font-style: normal;
+        }
+
+        @font-face {
+            font-family: 'Questrial';
+            src: url('resources/fonts/Questrial-Regular.ttf') format('truetype');
+            font-weight: normal;
+            font-style: normal;
+        }
+
+        .glass {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .glass-heavy {
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #0f172a;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #475569;
+        }
+
+        body {
+            background-color: #020617;
+            background-image:
+                radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.15) 0px, transparent 50%),
+                radial-gradient(at 100% 0%, rgba(129, 140, 248, 0.15) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(56, 189, 248, 0.15) 0px, transparent 50%),
+                radial-gradient(at 0% 100%, rgba(129, 140, 248, 0.15) 0px, transparent 50%);
+            background-attachment: fixed;
+            color: #f8fafc;
+            overflow-x: hidden;
+        }
+
+        .view-section {
+            display: none;
+            opacity: 0;
+            transition: opacity 0.5s ease-in-out;
+        }
+
+        .view-section.active {
+            display: flex;
+            opacity: 1;
+        }
+
+        .code-input {
+            background-color: rgba(15, 23, 42, 0.8) !important;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            color: #f8fafc !important;
+            caret-color: #38bdf8;
+            text-align: center;
+            font-family: 'Space Grotesk', monospace;
+            font-size: 1.5rem;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+
+        .code-input::placeholder {
+            color: rgba(148, 163, 184, 0.5);
+        }
+
+        .code-input:focus {
+            background-color: rgba(30, 41, 59, 1) !important;
+            border-color: #38bdf8;
+            outline: none;
+            box-shadow: 0 0 15px rgba(56, 189, 248, 0.3);
+        }
+
+        .code-input:-webkit-autofill,
+        .code-input:-webkit-autofill:hover,
+        .code-input:-webkit-autofill:focus,
+        .code-input:-webkit-autofill:active {
+            -webkit-box-shadow: 0 0 0 30px #0f172a inset !important;
+            -webkit-text-fill-color: white !important;
+            transition: background-color 5000s ease-in-out 0s;
+        }
+
+        .toast {
+            transform: translateX(100%);
+            transition: transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
+        }
+
+        .toast.show {
+            transform: translateX(0);
+        }
+    </style>
+</head>
+
+<body
+    class="font-sans min-h-screen flex flex-col justify-between relative selection:bg-brand-accent selection:text-brand-dark">
+
+    <nav class="w-full p-6 flex justify-between items-center z-50">
+        <div class="flex items-center gap-2 cursor-pointer" onclick="app.goHome()">
+            <div class="w-11 h-11 flex items-center justify-center">
+                <img src="resources/icons/SharePeerLogo.png" alt="SharePeer Logo"
+                    class="w-full h-full object-contain brightness-0 invert">
+            </div>
+            <span class="font-display font-bold text-xl tracking-tight">SharePeer</span>
+        </div>
+        <div class="text-xs font-mono text-slate-400 border border-slate-800 rounded-full px-3 py-1 glass">
+            v1.0.0
+        </div>
+    </nav>
+
+    <main class="flex-grow flex flex-col items-center justify-center p-4 w-full max-w-6xl mx-auto relative z-10">
+
+        <section id="home-view" class="view-section active flex-col items-center gap-8 md:gap-12 w-full text-center">
+            <div class="space-y-4 max-w-2xl mt-8 md:mt-0">
+                <h1
+                    class="text-4xl md:text-7xl font-display font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-200 via-blue-400 to-indigo-400 pb-2">
+                    Simple. Secure.<br>Direct.
+                </h1>
+                <p class="text-slate-400 text-base md:text-xl px-4">
+                    Peer-to-peer file sharing directly in your browser. <br class="hidden md:block">No intermediaries,
+                    no size limits.
+                </p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 w-full max-w-3xl mt-4 md:mt-8 px-4 md:px-0">
+                <div class="group relative cursor-pointer" onclick="app.showSend()">
+                    <div
+                        class="absolute -inset-1 bg-gradient-to-r from-cyan-400 to-blue-500 rounded-2xl blur opacity-25 group-hover:opacity-75 transition duration-500">
+                    </div>
+                    <div
+                        class="relative glass rounded-xl p-6 md:p-8 flex flex-row md:flex-col items-center justify-start md:justify-center gap-6 h-auto md:h-64 hover:bg-white/5 transition border border-white/10">
+                        <div
+                            class="w-12 h-12 md:w-16 md:h-16 rounded-full bg-blue-500/20 flex-shrink-0 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 md:h-8 md:w-8 text-blue-400"
+                                fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                            </svg>
+                        </div>
+                        <div class="text-left md:text-center">
+                            <h3 class="text-xl md:text-2xl font-display font-bold text-white">Send Files
+                            </h3>
+                            <p class="text-slate-400 text-xs md:text-sm">Generate a code and share files directly.</p>
+                        </div>
+                        <div class="ml-auto md:hidden text-slate-500">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20"
+                                fill="currentColor">
+                                <path fill-rule="evenodd"
+                                    d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z"
+                                    clip-rule="evenodd" />
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="group relative cursor-pointer" onclick="app.showReceive()">
+                    <div
+                        class="absolute -inset-1 bg-gradient-to-r from-indigo-500 to-purple-500 rounded-2xl blur opacity-25 group-hover:opacity-75 transition duration-500">
+                    </div>
+                    <div
+                        class="relative glass rounded-xl p-6 md:p-8 flex flex-row md:flex-col items-center justify-start md:justify-center gap-6 h-auto md:h-64 hover:bg-white/5 transition border border-white/10">
+                        <div
+                            class="w-12 h-12 md:w-16 md:h-16 rounded-full bg-indigo-500/20 flex-shrink-0 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 md:h-8 md:w-8 text-indigo-400"
+                                fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                            </svg>
+                        </div>
+                        <div class="text-left md:text-center">
+                            <h3 class="text-xl md:text-2xl font-display font-bold text-white">Receive Files
+                            </h3>
+                            <p class="text-slate-400 text-xs md:text-sm">Enter a code to connect and download.</p>
+                        </div>
+                        <div class="ml-auto md:hidden text-slate-500">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20"
+                                fill="currentColor">
+                                <path fill-rule="evenodd"
+                                    d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z"
+                                    clip-rule="evenodd" />
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="send-view" class="view-section flex-col items-center w-full max-w-3xl gap-6">
+            <h2 class="text-3xl font-display font-bold text-center">Send Files</h2>
+            <div id="drop-zone"
+                class="w-full h-64 border-2 border-dashed border-slate-600 rounded-2xl flex flex-col items-center justify-center hover:border-brand-accent hover:bg-brand-accent/5 transition-all cursor-pointer relative glass">
+                <input type="file" id="file-input" multiple
+                    class="absolute inset-0 w-full h-full opacity-0 cursor-pointer">
+                <div class="text-center p-6 transition-all" id="drop-content-empty">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 mx-auto text-slate-500 mb-4" fill="none"
+                        viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                    </svg>
+                    <p class="text-lg font-medium text-slate-300">Drag & Drop or Click to Select</p>
+                    <p class="text-sm text-slate-500">Support matching via code generation</p>
+                </div>
+            </div>
+
+            <div id="file-list" class="w-full space-y-2 hidden">
+            </div>
+
+            <button id="btn-ready"
+                class="hidden w-full py-4 rounded-xl bg-blue-600 text-white font-medium text-lg hover:bg-blue-500 transition-colors shadow-lg shadow-blue-600/10 active:scale-[0.98] outline-none"
+                onclick="app.generateCode()">
+                Get Connection Code
+            </button>
+
+            <div id="code-display-area" class="hidden w-full flex-col items-center gap-6 animate-fade-in-up">
+                <div class="text-slate-400">Share this code with the recipient:</div>
+                <div class="flex gap-4 items-center justify-center font-mono text-4xl md:text-5xl font-bold text-brand-accent tracking-wider"
+                    id="generated-code">
+                </div>
+
+                <div id="connection-status"
+                    class="flex items-center gap-3 text-sm text-amber-400 bg-amber-400/10 px-4 py-2 rounded-lg border border-amber-400/20">
+                    <div class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></div>
+                    Waiting for peer connection...
+                </div>
+            </div>
+        </section>
+
+        <section id="receive-view" class="view-section flex-col items-center w-full max-w-xl gap-4">
+            <h2 class="text-3xl font-display font-bold text-center">Receive Files</h2>
+            <p class="text-slate-400 text-center">Enter the 9-character code from the sender</p>
+
+            <div class="flex flex-col gap-6 w-full items-center">
+                <div class="flex gap-2 items-center justify-center w-full">
+                    <input type="text" maxlength="3" class="code-input w-24 h-16 rounded-xl" id="code-1"
+                        placeholder="AbC" oninput="app.handleInputMove(this, 'code-2')"
+                        onkeydown="app.handleBackspace(event, this, null)" onpaste="app.handlePaste(event)">
+                    <span class="text-slate-500 text-2xl">-</span>
+                    <input type="text" maxlength="3" class="code-input w-24 h-16 rounded-xl" id="code-2"
+                        placeholder="123" oninput="app.handleInputMove(this, 'code-3')"
+                        onkeydown="app.handleBackspace(event, this, 'code-1')" onpaste="app.handlePaste(event)">
+                    <span class="text-slate-500 text-2xl">-</span>
+                    <input type="text" maxlength="3" class="code-input w-24 h-16 rounded-xl" id="code-3"
+                        placeholder="DeF" oninput="app.handleInputMove(this, null)"
+                        onkeydown="app.handleBackspace(event, this, 'code-2')" onpaste="app.handlePaste(event)">
+                </div>
+
+                <button id="btn-connect"
+                    class="w-full py-4 rounded-xl bg-blue-600 text-white font-medium text-lg hover:bg-blue-500 transition-colors shadow-lg shadow-blue-600/10 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed outline-none"
+                    onclick="app.connectToPeer()">
+                    Connect & Receive
+                </button>
+            </div>
+        </section>
+
+    </main>
+
+    <footer class="text-center p-6 text-slate-600 font-mono text-xs z-10">
+        SharePeer &copy; 2026 XmerOriginals
+    </footer>
+
+    <div id="transfer-popup"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm hidden opacity-0 transition-opacity duration-300">
+        <div class="bg-slate-900 border border-slate-700 p-8 rounded-2xl w-full max-w-md shadow-2xl transform scale-95 transition-transform duration-300"
+            id="transfer-content">
+            <div class="flex justify-between items-start mb-6">
+                <h3 class="text-xl font-bold font-display text-white">Transferring Files...</h3>
+                <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-brand-accent"></div>
+            </div>
+
+            <div class="w-full bg-slate-800 rounded-full h-2 mb-2 overflow-hidden">
+                <div id="transfer-progress-bar" class="bg-brand-accent h-2 rounded-full transition-all duration-300"
+                    style="width: 0%"></div>
+            </div>
+            <p id="transfer-status-text" class="text-right text-xs text-slate-400 mb-6">0%</p>
+
+            <label class="flex items-center gap-3 cursor-pointer group">
+                <div class="relative">
+                    <input type="checkbox" id="wakelock-checkbox" class="sr-only" onchange="app.toggleWakeLock(this)">
+                    <div
+                        class="w-10 h-6 bg-slate-700 rounded-full shadow-inner transition group-hover:bg-slate-600 peer-checked:bg-green-500 block toggle-bg">
+                    </div>
+                    <div
+                        class="dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition transform peer-checked:translate-x-full">
+                    </div>
+                </div>
+                <span class="text-slate-300 text-sm select-none">Keep screen awake</span>
+            </label>
+        </div>
+    </div>
+
+    <div id="file-received-modal"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md hidden">
+        <div
+            class="bg-slate-900 border border-brand-accent/30 p-8 rounded-2xl w-full max-w-lg shadow-2xl relative overflow-hidden flex flex-col max-h-[90vh]">
+            <div
+                class="absolute -top-10 -right-10 w-32 h-32 bg-brand-accent/20 rounded-full blur-3xl pointer-events-none">
+            </div>
+
+            <div class="text-center mb-6 flex-shrink-0">
+                <div class="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-green-400" fill="none"
+                        viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                </div>
+                <h3 class="text-2xl font-bold font-display text-white">Files Received!</h3>
+                <p class="text-slate-400 text-sm mt-1">Files are ready for local download.</p>
+            </div>
+
+            <div id="received-files-list" class="overflow-y-auto mb-6 pr-2 custom-scrollbar flex-grow min-h-[100px]">
+            </div>
+
+            <div class="grid grid-cols-1 gap-4 flex-shrink-0">
+                <button onclick="app.discardFile()"
+                    class="py-3 px-4 rounded-xl bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white transition font-medium w-full border border-slate-700">
+                    Close & Finish
+                </button>
+            </div>
+            <p class="text-center text-xs text-amber-500/60 mt-4">Downloaded files are saved. Unsaved ones are lost on
+                refresh.</p>
+        </div>
+    </div>
+
+    <div id="toast-container" class="fixed top-24 right-6 z-[60] flex flex-col gap-2 pointer-events-none">
+    </div>
+
+    <style>
+        input:checked+.toggle-bg {
+            background-color: #10b981;
+        }
+
+        input:checked+.toggle-bg+.dot {
+            transform: translateX(100%);
+        }
+    </style>
+
+    <script src="app.js"></script>
+</body>
+
+</html>
