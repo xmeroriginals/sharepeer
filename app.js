@@ -45,6 +45,24 @@ const app = {
     });
 
     console.log("SharePeer Initialized");
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const codeParam = urlParams.get("code");
+    if (codeParam && codeParam.length === 9) {
+      app.showReceive();
+      document.getElementById("code-1").value = codeParam.substring(0, 3).toUpperCase();
+      document.getElementById("code-2").value = codeParam.substring(3, 6).toUpperCase();
+      document.getElementById("code-3").value = codeParam.substring(6, 9).toUpperCase();
+
+      app.cleanUrl();
+      setTimeout(() => app.connectToPeer(), 500);
+    }
+  },
+
+  cleanUrl: () => {
+    const url = new URL(window.location);
+    url.searchParams.delete("code");
+    window.history.replaceState({}, document.title, url.pathname);
   },
 
   goHome: () => {
@@ -222,14 +240,13 @@ const app = {
                         <div class="bg-blue-500/20 p-2 rounded text-blue-400">
                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
                         </div>
-                        <div class="truncate text-sm text-slate-200">${
-                          f.name
-                        }</div>
+                        <div class="truncate text-sm text-slate-200">${f.name
+          }</div>
                     </div>
                     <div class="flex items-center gap-3">
                         <div class="text-xs text-slate-500 whitespace-nowrap">${app.formatSize(
-                          f.size
-                        )}</div>
+            f.size
+          )}</div>
                         <button onclick="app.removeFile(${index})" class="text-slate-500 hover:text-red-400 transition">
                             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                         </button>
@@ -268,7 +285,7 @@ const app = {
         .map(
           () =>
             (charsAlpha + charsNum)[
-              Math.floor(Math.random() * (charsAlpha + charsNum).length)
+            Math.floor(Math.random() * (charsAlpha + charsNum).length)
             ]
         )
         .join("");
@@ -306,6 +323,22 @@ const app = {
     }
 
     app.initSenderPeer(rawId);
+    app.renderQRCode(rawId);
+  },
+
+  renderQRCode: (code) => {
+    const qrEl = document.getElementById("qrcode");
+    if (!qrEl) return;
+    qrEl.innerHTML = "";
+    const shareUrl = `${window.location.origin}${window.location.pathname}?code=${code}`;
+    new QRCode(qrEl, {
+      text: shareUrl,
+      width: 160,
+      height: 160,
+      colorDark: "#0f172a",
+      colorLight: "#ffffff",
+      correctLevel: QRCode.CorrectLevel.H,
+    });
   },
 
   initSenderPeer: (id) => {
@@ -488,8 +521,8 @@ const app = {
           active.id === "code-1"
             ? "code-2"
             : active.id === "code-2"
-            ? "code-3"
-            : null
+              ? "code-3"
+              : null
         );
       }
     }
@@ -681,8 +714,7 @@ const app = {
         const percent = Math.min(100, Math.round((offset / file.size) * 100));
         app.updateProgress(
           percent,
-          `Sending ${app.sendQueueIndex + 1}/${app.filesToSend.length}: ${
-            file.name
+          `Sending ${app.sendQueueIndex + 1}/${app.filesToSend.length}: ${file.name
           }`
         );
         lastUpdate = now;
@@ -767,12 +799,11 @@ const app = {
                     ${ext}
                 </div>
                 <div class="overflow-hidden text-left">
-                    <h4 class="text-white text-sm font-medium truncate max-w-[150px]">${
-                      fileRecord.meta.name
-                    }</h4>
+                    <h4 class="text-white text-sm font-medium truncate max-w-[150px]">${fileRecord.meta.name
+      }</h4>
                     <p class="text-slate-500 text-[10px]">${app.formatSize(
-                      fileRecord.meta.size
-                    )}</p>
+        fileRecord.meta.size
+      )}</p>
                 </div>
             </div>
             <button onclick="app.downloadFile(${index})" class="bg-blue-600 text-white hover:bg-blue-500 px-4 py-2 rounded-lg transition shadow-sm text-xs font-medium flex-shrink-0">

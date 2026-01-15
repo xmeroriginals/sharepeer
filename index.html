@@ -69,6 +69,7 @@
         }
     </script>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
         @font-face {
             font-family: 'Space Grotesk';
@@ -193,7 +194,7 @@
             <span class="font-display font-bold text-xl tracking-tight">SharePeer</span>
         </div>
         <div class="text-xs font-mono text-slate-400 border border-slate-800 rounded-full px-3 py-1 glass">
-            v1.0.0
+            v1.0.1
         </div>
     </nav>
 
@@ -303,6 +304,11 @@
                 <div class="text-slate-400">Share this code with the recipient:</div>
                 <div class="flex gap-4 items-center justify-center font-mono text-4xl md:text-5xl font-bold text-brand-accent tracking-wider"
                     id="generated-code">
+                </div>
+
+                <div id="qrcode-container"
+                    class="bg-white p-3 rounded-xl scale-90 md:scale-100 shadow-lg shadow-brand-accent/20">
+                    <div id="qrcode"></div>
                 </div>
 
                 <div id="connection-status"
