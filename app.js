@@ -249,7 +249,7 @@ const app = {
   },
 
   generateCode: () => {
-    const charsAlpha = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const charsAlpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     const charsNum = "0123456789";
 
     const rAlpha = (len) =>
@@ -444,7 +444,7 @@ const app = {
       }
 
       app.toggleTransferPopup(false);
-      app.resetState();
+      if (!app.isFileHeld) app.resetState();
     });
 
     conn.on("error", (err) => {
@@ -578,7 +578,12 @@ const app = {
     if (!app.filesToSend.length) return;
 
     app.toggleTransferPopup(true);
-    app.checkWakeLock();
+
+    const wakeCheckbox = document.getElementById("wakelock-checkbox");
+    if (wakeCheckbox) {
+      wakeCheckbox.checked = true;
+      app.requestWakeLock();
+    }
 
     app.sendQueueIndex = 0;
     app.processNextFileToSend();

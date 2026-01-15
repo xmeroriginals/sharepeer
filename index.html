@@ -319,16 +319,16 @@
 
             <div class="flex flex-col gap-6 w-full items-center">
                 <div class="flex gap-2 items-center justify-center w-full">
-                    <input type="text" maxlength="3" class="code-input w-24 h-16 rounded-xl" id="code-1"
-                        placeholder="AbC" oninput="app.handleInputMove(this, 'code-2')"
+                    <input type="text" maxlength="3" class="code-input w-24 h-16 rounded-xl uppercase" id="code-1"
+                        placeholder="ABC" oninput="app.handleInputMove(this, 'code-2')"
                         onkeydown="app.handleBackspace(event, this, null)" onpaste="app.handlePaste(event)">
                     <span class="text-slate-500 text-2xl">-</span>
-                    <input type="text" maxlength="3" class="code-input w-24 h-16 rounded-xl" id="code-2"
+                    <input type="text" maxlength="3" class="code-input w-24 h-16 rounded-xl uppercase" id="code-2"
                         placeholder="123" oninput="app.handleInputMove(this, 'code-3')"
                         onkeydown="app.handleBackspace(event, this, 'code-1')" onpaste="app.handlePaste(event)">
                     <span class="text-slate-500 text-2xl">-</span>
-                    <input type="text" maxlength="3" class="code-input w-24 h-16 rounded-xl" id="code-3"
-                        placeholder="DeF" oninput="app.handleInputMove(this, null)"
+                    <input type="text" maxlength="3" class="code-input w-24 h-16 rounded-xl uppercase" id="code-3"
+                        placeholder="DEF" oninput="app.handleInputMove(this, null)"
                         onkeydown="app.handleBackspace(event, this, 'code-2')" onpaste="app.handlePaste(event)">
                 </div>
 
@@ -347,7 +347,7 @@
     </footer>
 
     <div id="transfer-popup"
-        class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm hidden opacity-0 transition-opacity duration-300">
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm hidden opacity-0 transition-opacity duration-300 p-4">
         <div class="bg-slate-900 border border-slate-700 p-8 rounded-2xl w-full max-w-md shadow-2xl transform scale-95 transition-transform duration-300"
             id="transfer-content">
             <div class="flex justify-between items-start mb-6">
@@ -377,7 +377,7 @@
     </div>
 
     <div id="file-received-modal"
-        class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md hidden">
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md hidden p-4">
         <div
             class="bg-slate-900 border border-brand-accent/30 p-8 rounded-2xl w-full max-w-lg shadow-2xl relative overflow-hidden flex flex-col max-h-[90vh]">
             <div
