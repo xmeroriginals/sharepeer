@@ -539,7 +539,8 @@ const app = {
     }
 
     const fullCode = `${c1}${c2}${c3}`;
-    const peerId = `spf-${fullCode}`;
+    const fullUpperCode = fullCode.toUpperCase();
+    const peerId = `spf-${fullUpperCode}`;
 
     document.getElementById("btn-connect").disabled = true;
     document.getElementById("btn-connect").innerText =
@@ -931,27 +932,57 @@ const app = {
 
   showToast: (message, type = "info") => {
     const container = document.getElementById("toast-container");
+    if (!container) return;
+
     const el = document.createElement("div");
 
-    let bg = "bg-slate-800";
-    let border = "border-slate-600";
+    let bg = "bg-slate-900/80";
+    let border = "border-white/10";
     let icon = "";
+    let shadow = "shadow-black/50";
 
     if (type === "success") {
-      bg = "bg-slate-900";
-      border = "border-brand-accent";
-      icon = '<span class="text-green-400">✓</span>';
-    }
-    if (type === "error") {
-      bg = "bg-red-900/90";
-      border = "border-red-500";
-      icon = '<span class="text-white">✕</span>';
+      border = "border-emerald-500/50";
+      shadow = "shadow-emerald-500/10";
+      icon = `
+                <div class="flex-shrink-0 w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center">
+                    <svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
+                    </svg>
+                </div>
+            `;
+    } else if (type === "error") {
+      bg = "bg-red-900/40";
+      border = "border-red-500/50";
+      shadow = "shadow-red-500/10";
+      icon = `
+                <div class="flex-shrink-0 w-8 h-8 rounded-full bg-red-500/20 flex items-center justify-center">
+                    <svg class="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </div>
+            `;
+    } else {
+      border = "border-blue-500/50";
+      shadow = "shadow-blue-500/10";
+      icon = `
+                <div class="flex-shrink-0 w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center">
+                    <svg class="w-4 h-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                </div>
+            `;
     }
 
-    el.className = `toast p-4 rounded-xl border ${border} ${bg} text-white shadow-lg flex items-center gap-3 min-w-[300px] pointer-events-auto`;
+    el.className = `toast backdrop-blur-xl ${bg} ${border} border ${shadow} p-3 pl-4 pr-5 rounded-2xl text-white shadow-2xl flex items-center gap-4 min-w-[320px] pointer-events-auto ring-1 ring-white/10`;
     el.innerHTML = `
             ${icon}
-            <div class="text-sm font-medium">${message}</div>
+            <div class="text-sm font-medium pr-2 text-slate-100">${message}</div>
+            <button class="ml-auto text-slate-500 hover:text-white transition-colors" onclick="this.parentElement.remove()">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
         `;
 
     container.appendChild(el);
@@ -961,9 +992,13 @@ const app = {
     });
 
     setTimeout(() => {
+      if (!el.parentElement) return;
       el.classList.remove("show");
-      setTimeout(() => el.remove(), 300);
-    }, 4000);
+
+      setTimeout(() => {
+        if (el.parentElement) el.remove();
+      }, 400);
+    }, 4500);
   },
 };
 

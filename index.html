@@ -85,6 +85,13 @@
             font-style: normal;
         }
 
+        @font-face {
+            font-family: 'GoogleSansCode';
+            src: url('resources/fonts/GoogleSansCode-Bold.ttf') format('truetype');
+            font-weight: bold;
+            font-style: normal;
+        }
+
         .glass {
             background: rgba(255, 255, 255, 0.05);
             backdrop-filter: blur(10px);
@@ -145,10 +152,14 @@
             color: #f8fafc !important;
             caret-color: #38bdf8;
             text-align: center;
-            font-family: 'Space Grotesk', monospace;
+            font-family: 'GoogleSansCode', monospace;
             font-size: 1.5rem;
             transition: all 0.3s ease;
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+
+        .generated-code-font {
+            font-family: 'GoogleSansCode', monospace;
         }
 
         .code-input::placeholder {
@@ -172,12 +183,14 @@
         }
 
         .toast {
-            transform: translateX(100%);
-            transition: transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
+            transform: translateY(-1.5rem);
+            opacity: 0;
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
         }
 
         .toast.show {
-            transform: translateX(0);
+            transform: translateY(0);
+            opacity: 1;
         }
     </style>
 </head>
@@ -302,7 +315,7 @@
 
             <div id="code-display-area" class="hidden w-full flex-col items-center gap-6 animate-fade-in-up">
                 <div class="text-slate-400">Share this code with the recipient:</div>
-                <div class="flex gap-4 items-center justify-center font-mono text-4xl md:text-5xl font-bold text-brand-accent tracking-wider"
+                <div class="generated-code-font flex gap-4 items-center justify-center text-4xl md:text-5xl font-bold text-brand-accent tracking-wider"
                     id="generated-code">
                 </div>
 
@@ -415,7 +428,8 @@
         </div>
     </div>
 
-    <div id="toast-container" class="fixed top-24 right-6 z-[60] flex flex-col gap-2 pointer-events-none">
+    <div id="toast-container"
+        class="fixed top-6 left-1/2 -translate-x-1/2 z-[100] flex flex-col items-center gap-3 pointer-events-none w-full max-w-sm px-4">
     </div>
 
     <style>
