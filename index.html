@@ -4,26 +4,26 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SharePeer - Fast, Secure & Direct P2P File Transfer</title>
+    <title>SharePeer - Secure & Fast Peer-to-Peer File Transfer</title>
     <meta name="description"
-        content="SharePeer is a ultra-fast, secure, and private peer-to-peer file sharing tool that works directly in your browser. No middleman, no size limits, and no storage.">
+        content="SharePeer: Secure, private, and fast peer-to-peer file sharing directly in your browser. No intermediaries, no file size limits, and no registration required.">
     <meta name="keywords"
-        content="file sharing, p2p, peer to peer, secure file transfer, browser transfer, sharepeer, direct download, no limit sharing">
+        content="p2p file sharing, secure file transfer, send large files, anonymous file sharing, browser p2p, direct file transfer, private file share, sharepeer">
     <meta name="author" content="XmerOriginals">
     <meta name="robots" content="index, follow">
-    <link rel="canonical" href="https://sharepeer.xmer.net">
+    <link rel="canonical" href="https://sharepeer.xmeroriginals.com">
     <meta property="og:type" content="website">
-    <meta property="og:url" content="https://sharepeer.xmer.net">
-    <meta property="og:title" content="SharePeer - Fast, Secure & Direct P2P File Transfer">
+    <meta property="og:url" content="https://sharepeer.xmeroriginals.com">
+    <meta property="og:title" content="SharePeer - Secure & Fast P2P File Transfer">
     <meta property="og:description"
-        content="Ultra-fast, secure, and private P2P file sharing directly in your browser. No intermediaries, no size limits.">
-    <meta property="og:image" content="resources/icons/SharePeerLogo.png">
+        content="Fast, secure, and private P2P file sharing directly in your browser. No intermediaries, no size limits.">
+    <meta property="og:image" content="https://sharepeer.xmeroriginals.com/resources/icons/SharePeerLogo.png">
     <meta property="twitter:card" content="summary_large_image">
-    <meta property="twitter:url" content="https://sharepeer.xmer.net">
-    <meta property="twitter:title" content="SharePeer - Fast, Secure & Direct P2P File Transfer">
+    <meta property="twitter:url" content="https://sharepeer.xmeroriginals.com">
+    <meta property="twitter:title" content="SharePeer - Secure & Fast P2P File Transfer">
     <meta property="twitter:description"
-        content="Ultra-fast, secure, and private P2P file sharing directly in your browser. No intermediaries, no size limits.">
-    <meta property="twitter:image" content="resources/icons/SharePeerLogo.png">
+        content="Fast, secure, and private P2P file sharing directly in your browser. No intermediaries, no size limits.">
+    <meta property="twitter:image" content="https://sharepeer.xmeroriginals.com/resources/icons/SharePeerLogo.png">
     <link rel="icon" type="image/png" href="resources/icons/SharePeerLogo.png">
     <link rel="apple-touch-icon" href="resources/icons/SharePeerLogo.png">
 
@@ -33,12 +33,18 @@
       "@type": "SoftwareApplication",
       "name": "SharePeer",
       "operatingSystem": "Web Browser",
-      "applicationCategory": "Utility",
+      "applicationCategory": "File Sharing Utility",
       "offers": {
         "@type": "Offer",
-        "price": "0"
+        "price": "0",
+        "priceCurrency": "USD"
       },
-      "description": "Secure, browser-based peer-to-peer file sharing without intermediaries or file size limits."
+      "description": "Secure, browser-based peer-to-peer file sharing without intermediaries or file size limits. Direct device-to-device transfer.",
+      "url": "https://sharepeer.xmeroriginals.com",
+      "author": {
+          "@type": "Organization",
+          "name": "XmerOriginals"
+      }
     }
     </script>
 
@@ -214,19 +220,22 @@
     <main class="flex-grow flex flex-col items-center justify-center p-4 w-full max-w-6xl mx-auto relative z-10">
 
         <section id="home-view" class="view-section active flex-col items-center gap-8 md:gap-12 w-full text-center">
-            <div class="space-y-4 max-w-2xl mt-8 md:mt-0">
+            <header class="space-y-4 max-w-2xl mt-8 md:mt-0">
                 <h1
                     class="text-4xl md:text-7xl font-display font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-200 via-blue-400 to-indigo-400 pb-2">
                     Simple. Secure.<br>Direct.
                 </h1>
                 <p class="text-slate-400 text-base md:text-xl px-4">
                     Peer-to-peer file sharing directly in your browser. <br class="hidden md:block">No intermediaries,
-                    no size limits.
+                    no size limits, and 100% private.
                 </p>
-            </div>
+            </header>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 w-full max-w-3xl mt-4 md:mt-8 px-4 md:px-0">
-                <div class="group relative cursor-pointer" onclick="app.showSend()">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 w-full max-w-3xl mt-4 md:mt-8 px-4 md:px-0"
+                role="navigation" aria-label="Main Actions">
+                <button
+                    class="group relative cursor-pointer text-center w-full focus:outline-none focus:ring-2 focus:ring-brand-accent rounded-2xl"
+                    onclick="app.showSend()" aria-label="Send files to another device">
                     <div
                         class="absolute -inset-1 bg-gradient-to-r from-cyan-400 to-blue-500 rounded-2xl blur opacity-25 group-hover:opacity-75 transition duration-500">
                     </div>
@@ -235,14 +244,15 @@
                         <div
                             class="w-12 h-12 md:w-16 md:h-16 rounded-full bg-blue-500/20 flex-shrink-0 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 md:h-8 md:w-8 text-blue-400"
-                                fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                     d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                             </svg>
                         </div>
                         <div class="text-left md:text-center">
-                            <h3 class="text-xl md:text-2xl font-display font-bold text-white">Send Files
-                            </h3>
+                            <h2 class="text-xl md:text-2xl font-display font-bold text-white uppercase tracking-tight">
+                                Send Files
+                            </h2>
                             <p class="text-slate-400 text-xs md:text-sm">Generate a code and share files directly.</p>
                         </div>
                         <div class="ml-auto md:hidden text-slate-500">
@@ -254,9 +264,11 @@
                             </svg>
                         </div>
                     </div>
-                </div>
+                </button>
 
-                <div class="group relative cursor-pointer" onclick="app.showReceive()">
+                <button
+                    class="group relative cursor-pointer text-center w-full focus:outline-none focus:ring-2 focus:ring-brand-accent rounded-2xl"
+                    onclick="app.showReceive()" aria-label="Receive files from another device">
                     <div
                         class="absolute -inset-1 bg-gradient-to-r from-indigo-500 to-purple-500 rounded-2xl blur opacity-25 group-hover:opacity-75 transition duration-500">
                     </div>
@@ -265,14 +277,15 @@
                         <div
                             class="w-12 h-12 md:w-16 md:h-16 rounded-full bg-indigo-500/20 flex-shrink-0 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 md:h-8 md:w-8 text-indigo-400"
-                                fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                     d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                             </svg>
                         </div>
                         <div class="text-left md:text-center">
-                            <h3 class="text-xl md:text-2xl font-display font-bold text-white">Receive Files
-                            </h3>
+                            <h2 class="text-xl md:text-2xl font-display font-bold text-white uppercase tracking-tight">
+                                Receive Files
+                            </h2>
                             <p class="text-slate-400 text-xs md:text-sm">Enter a code to connect and download.</p>
                         </div>
                         <div class="ml-auto md:hidden text-slate-500">
@@ -284,8 +297,27 @@
                             </svg>
                         </div>
                     </div>
-                </div>
+                </button>
             </div>
+
+            <section
+                class="max-w-5xl mx-auto mt-16 grid grid-cols-1 md:grid-cols-3 gap-8 px-4 text-left border-t border-white/5 pt-16">
+                <div>
+                    <h3 class="text-brand-accent font-display font-bold text-lg mb-2">Device to Device</h3>
+                    <p class="text-slate-400 text-sm leading-relaxed">Files never touch a server. Your data moves
+                        directly between devices using WebRTC technology, ensuring maximum speed and privacy.</p>
+                </div>
+                <div>
+                    <h3 class="text-brand-accent font-display font-bold text-lg mb-2">No Size Limits</h3>
+                    <p class="text-slate-400 text-sm leading-relaxed">Send 1GB, 10GB, or even 100GB. Since we don't
+                        store your files, there are no artificial limits on how much data you can transfer.</p>
+                </div>
+                <div>
+                    <h3 class="text-brand-accent font-display font-bold text-lg mb-2">Secure & Anonymous</h3>
+                    <p class="text-slate-400 text-sm leading-relaxed">No tracking, no logs, and no registration. Shared
+                        files are end-to-end encrypted during the peer-to-peer transfer process.</p>
+                </div>
+            </section>
         </section>
 
         <section id="send-view" class="view-section flex-col items-center w-full max-w-3xl gap-6">
