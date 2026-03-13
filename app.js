@@ -10,8 +10,10 @@ const app = {
   wakeLockSentinel: null,
   isTransferring: false,
   isFileHeld: false,
+  ecdhKeyPair: null,
+  sharedSecret: null,
 
-  init: () => {
+  init: async () => {
     const dropZone = document.getElementById("drop-zone");
     const fileInput = document.getElementById("file-input");
 
@@ -38,16 +40,26 @@ const app = {
     }
 
     window.addEventListener("beforeunload", (e) => {
-      if (app.isFileHeld) {
+      if (app.isTransferring || app.receivedFileParts.length > 0) {
+        if (app.dbReady && app.db) {
+          const transaction = app.db.transaction("files", "readwrite");
+          transaction.objectStore("files").clear();
+        }
+      }
+
+      if (app.isFileHeld || app.isTransferring) {
         e.preventDefault();
         e.returnValue = "";
       }
     });
 
+    window.addEventListener("paste", app.handleGlobalPaste);
+
     console.log("SharePeer Initialized");
 
     const urlParams = new URLSearchParams(window.location.search);
-    const codeParam = urlParams.get("code");
+    const hashMatch = window.location.hash.match(/#([a-zA-Z0-9]{9})/);
+    const codeParam = (hashMatch ? hashMatch[1] : null) || urlParams.get("code");
     if (codeParam && codeParam.length === 9) {
       app.showReceive();
       document.getElementById("code-1").value = codeParam.substring(0, 3).toUpperCase();
@@ -55,13 +67,24 @@ const app = {
       document.getElementById("code-3").value = codeParam.substring(6, 9).toUpperCase();
 
       app.cleanUrl();
-      setTimeout(() => app.connectToPeer(), 500);
+      setTimeout(() => app.requestConnection(), 500);
+    }
+
+    try {
+      app.ecdhKeyPair = await crypto.subtle.generateKey(
+        { name: "ECDH", namedCurve: "P-256" },
+        true,
+        ["deriveKey", "deriveBits"]
+      );
+    } catch (e) {
+      console.error("ECDH Init Error", e);
     }
   },
 
   cleanUrl: () => {
     const url = new URL(window.location);
     url.searchParams.delete("code");
+    url.hash = "";
     window.history.replaceState({}, document.title, url.pathname);
   },
 
@@ -146,6 +169,8 @@ const app = {
   },
 
   resetState: () => {
+    if (app.isFileHeld) return;
+
     app.filesToSend = [];
     app.receivedFileParts = [];
     app.receivedFileMeta = null;
@@ -166,6 +191,9 @@ const app = {
     }
     if (btnReady) btnReady.classList.add("hidden");
     if (codeDisplay) codeDisplay.classList.add("hidden");
+
+    const secCodeDisplay = document.getElementById("security-code-display");
+    if (secCodeDisplay) secCodeDisplay.classList.add("hidden");
 
     const inputs = document.querySelectorAll(".code-input");
     inputs.forEach((i) => (i.value = ""));
@@ -231,6 +259,7 @@ const app = {
       btnReady.classList.remove("hidden");
 
       app.filesToSend.forEach((f, index) => {
+        const safeName = window.DOMPurify ? window.DOMPurify.sanitize(f.name) : f.name.replace(/</g, "&lt;").replace(/>/g, "&gt;");
         const row = document.createElement("div");
         row.className =
           "flex items-center justify-between p-3 bg-slate-800 rounded-lg border border-slate-700 animate-fade-in-up";
@@ -240,13 +269,12 @@ const app = {
                         <div class="bg-blue-500/20 p-2 rounded text-blue-400">
                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
                         </div>
-                        <div class="truncate text-sm text-slate-200">${f.name
-          }</div>
+                        <div class="truncate text-sm text-slate-200">${safeName}</div>
                     </div>
                     <div class="flex items-center gap-3">
                         <div class="text-xs text-slate-500 whitespace-nowrap">${app.formatSize(
-            f.size
-          )}</div>
+          f.size
+        )}</div>
                         <button onclick="app.removeFile(${index})" class="text-slate-500 hover:text-red-400 transition">
                             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                         </button>
@@ -310,15 +338,16 @@ const app = {
                 <div class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></div>
                 Waiting for peer connection...
             `;
+      statusEl.classList.remove(
+        "text-green-400", "bg-green-400/10", "border-green-400/20",
+        "text-blue-400", "bg-blue-400/10", "border-blue-400/20",
+        "text-amber-400", "bg-amber-400/10", "border-amber-400/20"
+      );
+
       statusEl.classList.add(
         "text-amber-400",
         "bg-amber-400/10",
         "border-amber-400/20"
-      );
-      statusEl.classList.remove(
-        "text-green-400",
-        "bg-green-400/10",
-        "border-green-400/20"
       );
     }
 
@@ -326,11 +355,33 @@ const app = {
     app.renderQRCode(rawId);
   },
 
+  generateSecuredId: async (rawId, stepOffset = 0) => {
+    const timeStep = Math.floor(Date.now() / 60000) + stepOffset;
+    const enc = new TextEncoder();
+    const keyMaterial = await crypto.subtle.importKey(
+      "raw", enc.encode(rawId), { name: "PBKDF2" }, false, ["deriveBits", "deriveKey"]
+    );
+    const bits = await crypto.subtle.deriveBits(
+      {
+        name: "PBKDF2",
+        salt: enc.encode(timeStep.toString()),
+        iterations: 100000,
+        hash: "SHA-256"
+      },
+      keyMaterial,
+      128
+    );
+    const hashArray = Array.from(new Uint8Array(bits));
+    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+    return `spf-${hashHex}`;
+  },
+
   renderQRCode: (code) => {
     const qrEl = document.getElementById("qrcode");
     if (!qrEl) return;
     qrEl.innerHTML = "";
-    const shareUrl = `${window.location.origin}${window.location.pathname}?code=${code}`;
+    const shareUrl = `${window.location.origin}${window.location.pathname}#${code}`;
     new QRCode(qrEl, {
       text: shareUrl,
       width: 160,
@@ -341,10 +392,10 @@ const app = {
     });
   },
 
-  initSenderPeer: (id) => {
+  initSenderPeer: async (id) => {
     app.showToast("Initializing Network...", "info");
 
-    const fullId = `spf-${id}`;
+    const fullId = await app.generateSecuredId(id, 0);
 
     app.peer = new Peer(fullId, {
       debug: 1,
@@ -424,28 +475,9 @@ const app = {
       app.conn = conn;
 
       if (app.role === "sender") {
-        const statusEl = document.getElementById("connection-status");
-        if (statusEl) {
-          statusEl.innerHTML = `
-                        <div class="w-2 h-2 rounded-full bg-green-400 shadow-[0_0_10px_rgba(74,222,128,0.5)]"></div>
-                        Device Connected
-                    `;
-          statusEl.classList.remove(
-            "text-amber-400",
-            "bg-amber-400/10",
-            "border-amber-400/20"
-          );
-          statusEl.classList.add(
-            "text-green-400",
-            "bg-green-400/10",
-            "border-green-400/20"
-          );
-        }
-
-        app.showToast("Receiver Connected!", "success");
-        setTimeout(() => app.startFileTransfer(), 500);
-      } else {
-        app.showToast("Connected to Sender!", "success");
+        const challenge = Math.random().toString(36).substring(2, 10);
+        app.powChallenge = challenge;
+        conn.send({ type: 'pow_challenge', challenge: challenge });
       }
     });
 
@@ -476,8 +508,15 @@ const app = {
         }
       }
 
-      app.toggleTransferPopup(false);
-      if (!app.isFileHeld) app.resetState();
+      if (app.role === "sender") {
+        app.toggleTransferPopup(false);
+        if (!app.isFileHeld) app.resetState();
+      } else {
+        if (!app.isFileHeld) {
+          app.toggleTransferPopup(false);
+          app.resetState();
+        }
+      }
     });
 
     conn.on("error", (err) => {
@@ -489,12 +528,79 @@ const app = {
   handleInputMove: (input, nextId) => {
     if (input.value.length >= 3 && nextId) {
       document.getElementById(nextId).focus();
+    } else if (input.id === 'code-3' && input.value.length === 3) {
+      app.requestConnection();
     }
   },
 
-  handleBackspace: (e, input, prevId) => {
+  handleInputKeydown: (e, input, prevId) => {
     if (e.key === "Backspace" && input.value.length === 0 && prevId) {
       document.getElementById(prevId).focus();
+    } else if (e.key === "Enter") {
+      app.requestConnection();
+    }
+  },
+
+  handleGlobalPaste: (e) => {
+    if (app.role !== "sender" || app.conn || app.myCode) return;
+    const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+    let files = [];
+    let textPromises = [];
+    for (const item of items) {
+      if (item.kind === "file") {
+        const f = item.getAsFile();
+        if (f) files.push(f);
+      } else if (item.kind === "string" && item.type === "text/plain") {
+        textPromises.push(new Promise(resolve => {
+          item.getAsString((text) => {
+            const clean = window.DOMPurify ? window.DOMPurify.sanitize(text) : text;
+            const f = new File([clean], `Pasted_Text_${Date.now()}.clipboard`, { type: "text/plain" });
+            resolve(f);
+          });
+        }));
+      }
+    }
+    Promise.all(textPromises).then(textFiles => {
+      const allFiles = [...files, ...textFiles];
+      if (allFiles.length > 0) {
+        if (confirm(`Do you want to add ${allFiles.length} item(s) from clipboard to the transfer list?`)) {
+          app.handleFiles(allFiles);
+        }
+      }
+    });
+  },
+
+  triggerPasteFromButton: async (e) => {
+    e.preventDefault();
+    if (app.role !== "sender" || app.conn || app.myCode) return;
+    try {
+      const clipboardItems = await navigator.clipboard.read();
+      let files = [];
+      for (const clipboardItem of clipboardItems) {
+        for (const type of clipboardItem.types) {
+          const blob = await clipboardItem.getType(type);
+          if (type.startsWith("image/")) {
+            const ext = type.split('/')[1] || 'png';
+            const f = new File([blob], `Pasted_Image_${Date.now()}.${ext}`, { type });
+            files.push(f);
+          } else if (type === "text/plain") {
+            const text = await blob.text();
+            const clean = window.DOMPurify ? window.DOMPurify.sanitize(text) : text;
+            const f = new File([clean], `Pasted_Text_${Date.now()}.clipboard`, { type });
+            files.push(f);
+          }
+        }
+      }
+      if (files.length > 0) {
+        if (confirm(`Do you want to add ${files.length} item(s) from clipboard to the transfer list?`)) {
+          app.handleFiles(files);
+        }
+      } else {
+        app.showToast("No compatible text or image found in clipboard.", "warning");
+      }
+    } catch (err) {
+      console.warn("Clipboard API failed:", err);
+      app.showToast("Clipboard access denied. Please use CTRL+V on your keyboard.", "warning");
     }
   },
 
@@ -528,7 +634,63 @@ const app = {
     }
   },
 
-  connectToPeer: (retryCount = 0) => {
+  requestConnection: () => {
+    const c1 = document.getElementById("code-1").value;
+    const c2 = document.getElementById("code-2").value;
+    const c3 = document.getElementById("code-3").value;
+
+    if (c1.length < 3 || c2.length < 3 || c3.length < 3) {
+      app.showToast("Please enter the full 9-character code.", "error");
+      return;
+    }
+
+    const modal = document.getElementById("security-warning-modal");
+    modal.classList.remove("hidden");
+    setTimeout(() => {
+      modal.classList.remove("opacity-0");
+      const div = modal.querySelector("div");
+      if (div) {
+        div.classList.remove("scale-95");
+        div.classList.add("scale-100");
+      }
+    }, 10);
+
+    const cbTrust = document.getElementById("sec-cb-trust");
+    const btnConfirm = document.getElementById("btn-sec-confirm");
+    cbTrust.checked = false;
+    btnConfirm.disabled = true;
+    btnConfirm.classList.add("opacity-50", "cursor-not-allowed");
+
+    cbTrust.onchange = (e) => {
+      if (e.target.checked) {
+        btnConfirm.disabled = false;
+        btnConfirm.classList.remove("opacity-50", "cursor-not-allowed");
+      } else {
+        btnConfirm.disabled = true;
+        btnConfirm.classList.add("opacity-50", "cursor-not-allowed");
+      }
+    };
+  },
+
+  cancelConnection: () => {
+    const modal = document.getElementById("security-warning-modal");
+    modal.classList.add("opacity-0");
+    const div = modal.querySelector("div");
+    if (div) {
+      div.classList.remove("scale-100");
+      div.classList.add("scale-95");
+    }
+    setTimeout(() => {
+      modal.classList.add("hidden");
+    }, 300);
+  },
+
+  confirmConnection: () => {
+    app.cancelConnection();
+    app.connectToPeer();
+  },
+
+  connectToPeer: async (retryCount = 0) => {
     const c1 = document.getElementById("code-1").value;
     const c2 = document.getElementById("code-2").value;
     const c3 = document.getElementById("code-3").value;
@@ -540,7 +702,6 @@ const app = {
 
     const fullCode = `${c1}${c2}${c3}`;
     const fullUpperCode = fullCode.toUpperCase();
-    const peerId = `spf-${fullUpperCode}`;
 
     document.getElementById("btn-connect").disabled = true;
     document.getElementById("btn-connect").innerText =
@@ -549,13 +710,14 @@ const app = {
     if (!app.peer || app.peer.destroyed) {
       app.peer = new Peer({
         debug: 1,
-        config: { iceServers: [{ url: "stun:stun.l.google.com:19302" }] },
+        config: { iceServers: [{ url: "stun:stun.l.google.com:19302" }, { url: "stun:stun1.l.google.com:19302" }] },
       });
     }
 
-    const attemptConnect = () => {
+    const attemptConnect = async (offset = 0) => {
       if (!app.peer || app.peer.destroyed) return;
 
+      const peerId = await app.generateSecuredId(fullUpperCode, offset);
       const conn = app.peer.connect(peerId, { reliable: true });
 
       let connected = false;
@@ -563,47 +725,53 @@ const app = {
       conn.on("open", () => {
         connected = true;
         app.conn = conn;
-        document.getElementById("btn-connect").innerText = "Connected!";
+        document.getElementById("btn-connect").innerText = "Authenticating...";
+        app.showToast("Connected! Securing connection...", "success");
         app.setupConnectionHandlers(conn);
       });
 
       conn.on("error", (err) => {
-        if (!connected) handleFailure();
+        if (!connected) handleFailure(offset);
       });
       conn.on("close", () => {
-        if (!connected) handleFailure();
+        if (!connected) handleFailure(offset);
       });
 
       setTimeout(() => {
         if (!connected && !conn.open) {
           conn.close();
-          handleFailure();
+          handleFailure(offset);
         }
-      }, 4000);
+      }, 6000);
 
-      function handleFailure() {
-        if (retryCount < 2) {
-          console.log(
-            `Connection attempt ${retryCount + 1} failed. Retrying...`
-          );
-          setTimeout(() => app.connectToPeer(retryCount + 1), 1000);
+      function handleFailure(failedOffset) {
+        if (failedOffset === 0) {
+          attemptConnect(-1);
+        } else if (failedOffset === -1) {
+          attemptConnect(1);
+        } else if (retryCount < 2) {
+          console.log(`Connection attempt ${retryCount + 1} failed. Retrying...`);
+          setTimeout(() => app.connectToPeer(retryCount + 1), 1500);
         } else {
-          app.showToast("Connection failed. Is the sender ready?", "error");
+          app.showToast("Connection failed. Check code and connection.", "error");
           document.getElementById("btn-connect").disabled = false;
-          document.getElementById("btn-connect").innerText =
-            "Connect & Receive";
+          document.getElementById("btn-connect").innerText = "Connect & Receive";
         }
       }
     };
 
     if (app.peer.open) {
-      attemptConnect();
+      attemptConnect(0);
     } else {
-      app.peer.on("open", attemptConnect);
+      app.peer.on("open", () => attemptConnect(0));
 
       app.peer.on("error", (err) => {
+        if (err.type === 'peer-unavailable') {
+          return;
+        }
         app.showToast("Peer Init Error: " + err.type, "error");
         document.getElementById("btn-connect").disabled = false;
+        document.getElementById("btn-connect").innerText = "Connect & Receive";
       });
     }
   },
@@ -684,10 +852,20 @@ const app = {
       const chunk = file.slice(offset, offset + chunkSize);
       const buffer = await chunk.arrayBuffer();
 
-      const dataChannel = app.conn.dataChannel;
-      if (dataChannel && dataChannel.bufferedAmount > 16 * 1024 * 1024) {
+      if (!app.sharedSecret) {
+        app.showToast("E2EE Secret not established properly!", "error");
+        return;
       }
 
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const encrypted = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv }, app.sharedSecret, buffer
+      );
+      const payload = new Uint8Array(12 + encrypted.byteLength);
+      payload.set(iv, 0);
+      payload.set(new Uint8Array(encrypted), 12);
+
+      const dataChannel = app.conn.dataChannel;
       if (dataChannel && dataChannel.bufferedAmount > 1024 * 1024) {
         await new Promise((resolve) => {
           const handler = () => {
@@ -706,7 +884,7 @@ const app = {
         });
       }
 
-      app.conn.send(buffer);
+      app.conn.send(payload);
 
       offset += chunkSize;
 
@@ -730,88 +908,274 @@ const app = {
   },
 
   handleIncomingData: (data) => {
-    if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
-      if (!app.receivedFileMeta) return;
+    app.receiveQueue = (app.receiveQueue || Promise.resolve()).then(async () => {
+      if (data.type === 'pow_challenge') {
+        return new Promise(resolve => {
+          let nonce = 0;
+          app.showToast("Securing connection (PoW)...", "info");
 
-      app.receivedFileParts.push(data);
-      app.receivedBytes += data.byteLength;
+          const attempt = async () => {
+            const encoder = new TextEncoder();
+            for (let i = 0; i < 200; i++) {
+              const hash = await crypto.subtle.digest("SHA-256", encoder.encode(data.challenge + nonce));
+              const hashArray = new Uint8Array(hash);
+              if (hashArray[0] === 0 && hashArray[1] === 0 && (hashArray[2] & 0xC0) === 0) {
+                app.conn.send({ type: 'pow_solution', nonce: nonce });
+                const btn = document.getElementById("btn-connect");
+                if (btn) btn.innerText = "Secured!";
+                resolve();
+                return;
+              }
+              nonce++;
+            }
+            setTimeout(attempt, 0);
+          };
+          attempt();
+        });
+      } else if (data.type === 'pow_solution') {
+        if (app.role === "sender") {
+          const encoder = new TextEncoder();
+          const hash = await crypto.subtle.digest("SHA-256", encoder.encode(app.powChallenge + data.nonce));
+          const hashArray = new Uint8Array(hash);
+          if (hashArray[0] === 0 && hashArray[1] === 0 && (hashArray[2] & 0xC0) === 0) {
+            const statusEl = document.getElementById("connection-status");
+            if (statusEl) {
+              statusEl.innerHTML = `
+                              <div class="w-2 h-2 rounded-full bg-green-400 shadow-[0_0_10px_rgba(74,222,128,0.5)]"></div>
+                              Device Connected
+                          `;
+              statusEl.classList.remove("text-amber-400", "bg-amber-400/10", "border-amber-400/20");
+              statusEl.classList.add("text-green-400", "bg-green-400/10", "border-green-400/20");
+            }
+            app.showToast("Receiver Connected (Secured)!", "success");
+            const exportedPubKey = await crypto.subtle.exportKey("jwk", app.ecdhKeyPair.publicKey);
+            app.conn.send({ type: "ecdh_exchange", pubKey: exportedPubKey });
 
-      const now = Date.now();
-      if (!app.lastReceiverUpdate) app.lastReceiverUpdate = 0;
+          } else {
+            app.conn.close();
+          }
+        }
+        return;
+      } else if (data.type === "ecdh_exchange") {
+        try {
+          const importedPubKey = await crypto.subtle.importKey(
+            "jwk", data.pubKey, { name: "ECDH", namedCurve: "P-256" }, true, []
+          );
+          app.sharedSecret = await crypto.subtle.deriveKey(
+            { name: "ECDH", public: importedPubKey },
+            app.ecdhKeyPair.privateKey,
+            { name: "AES-GCM", length: 256 },
+            false,
+            ["encrypt", "decrypt"]
+          );
 
-      if (
-        now - app.lastReceiverUpdate > 100 ||
-        app.receivedBytes >= app.receivedFileMeta.size
-      ) {
-        const percent = Math.min(
-          100,
-          Math.round((app.receivedBytes / app.receivedFileMeta.size) * 100)
-        );
-        app.updateProgress(percent, `Receiving ${app.receivedFileMeta.name}`);
-        app.lastReceiverUpdate = now;
+          if (app.role === "receiver") {
+            const exportedMyPubKey = await crypto.subtle.exportKey("jwk", app.ecdhKeyPair.publicKey);
+            app.conn.send({ type: "ecdh_exchange", pubKey: exportedMyPubKey });
+            await app.generateFingerprint(importedPubKey);
+            app.toggleTransferPopup(true);
+            app.updateProgress(0, "Waiting for files...");
+          } else if (app.role === "sender") {
+            app.showToast("E2EE Key Established!", "success");
+            await app.generateFingerprint(importedPubKey);
+            setTimeout(() => app.startFileTransfer(), 500);
+          }
+        } catch (e) {
+          console.error("ECDH Exchange Error", e);
+          app.showToast("E2EE Handshake Failed", "error");
+          app.conn.close();
+        }
+        return;
       }
-      return;
-    }
 
-    if (data.type === "file-start") {
-      app.receivedFileMeta = data;
-      app.receivedFileParts = [];
-      app.receivedBytes = 0;
-      app.lastReceiverUpdate = 0;
+      if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
+        if (!app.receivedFileMeta) return;
+        try {
+          const payload = new Uint8Array(data);
+          const iv = payload.slice(0, 12);
+          const ciphertext = payload.slice(12);
 
-      app.toggleTransferPopup(true);
-      app.updateProgress(
-        0,
-        `Receiving ${data.index + 1}/${data.totalFiles}: ${data.name}`
-      );
+          if (!app.sharedSecret) {
+            console.error("No E2EE shared secret available to decrypt!");
+            return;
+          }
 
-      if (!app.receivedFilesList) app.receivedFilesList = [];
-    } else if (data.type === "file-end") {
-      app.updateProgress(100, "Processing...");
-      const blob = new Blob(app.receivedFileParts, {
-        type: app.receivedFileMeta.mime,
-      });
+          const decrypted = await crypto.subtle.decrypt(
+            { name: "AES-GCM", iv }, app.sharedSecret, ciphertext
+          );
 
-      const fileRecord = {
-        meta: app.receivedFileMeta,
-        blob: blob,
-      };
-      app.receivedFilesList.push(fileRecord);
-      app.isFileHeld = true;
+          app.receivedFileParts.push(decrypted);
+          app.receivedBytes += decrypted.byteLength;
 
-      app.addFileToReceivedModal(fileRecord, app.receivedFilesList.length - 1);
-    } else if (data.type === "batch-complete") {
-      app.toggleTransferPopup(false);
-      app.showToast("All files received!", "success");
-      app.showReceivedModal();
-    }
+          const now = Date.now();
+          if (!app.lastReceiverUpdate) app.lastReceiverUpdate = 0;
+
+          if (now - app.lastReceiverUpdate > 100 || app.receivedBytes >= app.receivedFileMeta.size) {
+            const percent = Math.min(100, Math.round((app.receivedBytes / app.receivedFileMeta.size) * 100));
+            const safeName = window.DOMPurify ? window.DOMPurify.sanitize(app.receivedFileMeta.name) : app.receivedFileMeta.name.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            app.updateProgress(percent, `Receiving ${safeName}`);
+            app.lastReceiverUpdate = now;
+          }
+        } catch (e) {
+          console.error("Decryption failed", e);
+          app.terminateTransferWithError("Data decryption failed! Connection might be compromised.");
+        }
+        return;
+      }
+
+      if (data.type === "file-start") {
+        if (data.size > 1024 * 1024 * 512) {
+          const safeName = window.DOMPurify ? window.DOMPurify.sanitize(data.name) : data.name.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          if (!confirm(`Warning: Incoming file "${safeName}" is large (${app.formatSize(data.size)}). It might cause memory issues or crash the browser. Do you want to receive it anyway?`)) {
+            app.showToast("File rejected due to size.", "warning");
+            app.receivedFileMeta = null;
+            return;
+          }
+        }
+        app.receivedFileMeta = data;
+        app.receivedFileParts = [];
+        app.receivedBytes = 0;
+        app.lastReceiverUpdate = 0;
+
+        app.toggleTransferPopup(true);
+        const safeName = window.DOMPurify ? window.DOMPurify.sanitize(data.name) : data.name.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        app.updateProgress(0, `Receiving ${data.index + 1}/${data.totalFiles}: ${safeName}`);
+
+        if (!app.receivedFilesList) app.receivedFilesList = [];
+      } else if (data.type === "file-end") {
+        app.updateProgress(100, "Processing...");
+        const blob = new Blob(app.receivedFileParts, { type: app.receivedFileMeta.mime });
+
+        const fileId = "sp_" + Date.now() + "_" + Math.random().toString(36).substr(2, 5);
+
+        let fileRecord = {
+          id: fileId,
+          meta: app.receivedFileMeta,
+        };
+
+        if (app.dbReady) {
+          app.saveToIndexedDB(fileId, blob);
+          fileRecord.blob = null;
+        } else {
+          fileRecord.blob = blob;
+        }
+
+        app.receivedFilesList.push(fileRecord);
+        app.isFileHeld = true;
+        app.receivedFileParts = [];
+
+        app.addFileToReceivedModal(fileRecord, app.receivedFilesList.length - 1);
+      } else if (data.type === "batch-complete") {
+        app.toggleTransferPopup(false);
+        app.showToast("All files received!", "success");
+        app.showReceivedModal();
+      }
+    });
+  },
+
+  dbReady: false,
+  db: null,
+  initDB: () => {
+    const request = indexedDB.open("SharePeerDB", 1);
+    request.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains("files")) {
+        db.createObjectStore("files");
+      }
+    };
+    request.onsuccess = (e) => {
+      app.db = e.target.result;
+      app.dbReady = true;
+      const transaction = app.db.transaction("files", "readwrite");
+      transaction.objectStore("files").clear();
+    };
+    request.onerror = (e) => console.error("IndexedDB error", e);
+  },
+
+  saveToIndexedDB: (id, blob) => {
+    if (!app.db) return;
+    const transaction = app.db.transaction("files", "readwrite");
+    const store = transaction.objectStore("files");
+    store.put(blob, id);
+  },
+
+  getFromIndexedDB: (id) => {
+    return new Promise((resolve, reject) => {
+      if (!app.db) {
+        resolve(null);
+        return;
+      }
+      const transaction = app.db.transaction("files", "readonly");
+      const store = transaction.objectStore("files");
+      const request = store.get(id);
+      request.onsuccess = (e) => resolve(e.target.result);
+      request.onerror = (e) => reject(e);
+    });
   },
 
   addFileToReceivedModal: (fileRecord, index) => {
     const listContainer = document.getElementById("received-files-list");
-    const ext = fileRecord.meta.name.split(".").pop().substring(0, 4);
+    const filename = fileRecord.meta.name;
+    const safeName = window.DOMPurify ? window.DOMPurify.sanitize(filename) : filename.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const isClipboard = filename.endsWith(".clipboard");
+    const ext = isClipboard ? "TXT" : filename.split(".").pop().substring(0, 4);
 
     const el = document.createElement("div");
-    el.className =
-      "bg-slate-800/50 rounded-lg p-3 border border-slate-700 flex items-center justify-between gap-3 mb-2";
+    el.className = "bg-slate-800/50 rounded-lg p-3 border border-slate-700 flex flex-col md:flex-row items-center justify-between gap-3 mb-2";
+
+    let actions = `
+            <button onclick="app.downloadFile(${index})" class="bg-blue-600 text-white hover:bg-blue-500 px-4 py-2 rounded-lg transition shadow-sm text-xs font-medium flex-shrink-0 w-full md:w-auto">
+                Download
+            </button>
+    `;
+
+    if (isClipboard) {
+      actions = `
+            <div class="flex items-center gap-2 w-full md:w-auto mt-2 md:mt-0">
+                <button onclick="app.copyClipboardFile(${index})" class="bg-indigo-600 text-white hover:bg-indigo-500 px-4 py-2 rounded-lg transition shadow-sm text-xs font-medium flex-1 md:flex-none whitespace-nowrap">
+                    Copy
+                </button>
+                <button onclick="app.downloadFile(${index})" class="bg-slate-700 text-slate-300 hover:bg-slate-600 px-4 py-2 rounded-lg transition shadow-sm text-xs font-medium flex-1 md:flex-none">
+                    Download
+                </button>
+            </div>
+        `;
+    }
+
     el.innerHTML = `
-            <div class="flex items-center gap-3 overflow-hidden">
+            <div class="flex items-center gap-3 overflow-hidden w-full">
                 <div class="bg-slate-700 p-2 rounded text-slate-300 font-bold uppercase text-xs h-10 w-10 flex items-center justify-center flex-shrink-0">
                     ${ext}
                 </div>
-                <div class="overflow-hidden text-left">
-                    <h4 class="text-white text-sm font-medium truncate max-w-[150px]">${fileRecord.meta.name
-      }</h4>
-                    <p class="text-slate-500 text-[10px]">${app.formatSize(
-        fileRecord.meta.size
-      )}</p>
+                <div class="overflow-hidden text-left flex-grow">
+                    <h4 class="text-white text-sm font-medium truncate max-w-[150px] md:max-w-[200px]" title="${safeName}">${safeName}</h4>
+                    <p class="text-slate-500 text-[10px]">${app.formatSize(fileRecord.meta.size)}</p>
                 </div>
             </div>
-            <button onclick="app.downloadFile(${index})" class="bg-blue-600 text-white hover:bg-blue-500 px-4 py-2 rounded-lg transition shadow-sm text-xs font-medium flex-shrink-0">
-                Download
-            </button>
+            ${actions}
         `;
     listContainer.appendChild(el);
+  },
+
+  copyClipboardFile: async (index) => {
+    const fileRecord = app.receivedFilesList[index];
+    if (!fileRecord) return;
+    try {
+      let targetBlob = fileRecord.blob;
+      if (!targetBlob && fileRecord.id) {
+        targetBlob = await app.getFromIndexedDB(fileRecord.id);
+      }
+      if (!targetBlob) {
+        app.showToast("File data lost or unavailable.", "error");
+        return;
+      }
+      const text = await targetBlob.text();
+      await navigator.clipboard.writeText(text);
+      app.showToast("Copied to clipboard!", "success");
+    } catch (err) {
+      console.error("Copy failed", err);
+      app.showToast("Failed to copy to clipboard.", "error");
+    }
   },
 
   showReceivedModal: () => {
@@ -861,23 +1225,35 @@ const app = {
     );
   },
 
-  downloadFile: (index) => {
-    const file = app.receivedFilesList[index];
-    if (!file) return;
+  downloadFile: async (index) => {
+    const fileRecord = app.receivedFilesList[index];
+    if (!fileRecord) return;
 
-    const url = URL.createObjectURL(file.blob);
+    let targetBlob = fileRecord.blob;
+    if (!targetBlob && fileRecord.id) {
+      targetBlob = await app.getFromIndexedDB(fileRecord.id);
+    }
+    if (!targetBlob) {
+      app.showToast("File data lost or unavailable.", "error");
+      return;
+    }
+
+    const url = URL.createObjectURL(targetBlob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = file.meta.name;
+
+    let dlName = fileRecord.meta.name;
+    if (dlName.endsWith(".clipboard")) {
+      dlName = dlName.replace(".clipboard", ".txt");
+    }
+    a.download = dlName;
+
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
 
-    if (app.receivedFilesList.length === 1) {
-      app.discardFile();
-    } else {
-      app.showToast("Download started", "success");
-    }
+    app.showToast("Download started", "success");
   },
 
   discardFile: () => {
@@ -886,11 +1262,61 @@ const app = {
     app.receivedFileParts = [];
     app.receivedFileMeta = null;
 
+    if (app.dbReady && app.db) {
+      const transaction = app.db.transaction("files", "readwrite");
+      transaction.objectStore("files").clear();
+    }
+
     document.getElementById("received-files-list").innerHTML = "";
 
     document.getElementById("file-received-modal").classList.add("hidden");
     document.getElementById("file-received-modal").classList.remove("flex");
 
+    app.goHome();
+  },
+
+  generateFingerprint: async (importedPubKey) => {
+    try {
+      const bits = await crypto.subtle.deriveBits(
+        { name: "ECDH", public: importedPubKey },
+        app.ecdhKeyPair.privateKey,
+        32
+      );
+      const view = new DataView(bits);
+      const num = view.getUint32(0) % 1000000;
+      const code = num.toString().padStart(6, '0');
+      const formattedCode = code.substring(0, 3) + " " + code.substring(3, 6);
+
+      const el = document.getElementById("security-code-display");
+      const valEl = document.getElementById("security-code-value");
+      if (el && valEl) {
+        valEl.innerText = formattedCode;
+        el.classList.remove("hidden");
+      }
+      return formattedCode;
+    } catch (e) {
+      console.error("Fingerprint generation failed", e);
+    }
+  },
+
+  terminateTransferWithError: (msg) => {
+    app.showToast(msg, "error");
+    app.isTransferring = false;
+
+    if (app.conn) {
+      app.conn.close();
+    }
+
+    app.receivedFileParts = [];
+    app.receivedBytes = 0;
+
+    if (app.dbReady && app.db) {
+      const transaction = app.db.transaction("files", "readwrite");
+      transaction.objectStore("files").clear();
+    }
+
+    app.toggleTransferPopup(false);
+    app.resetState();
     app.goHome();
   },
 
@@ -1002,4 +1428,7 @@ const app = {
   },
 };
 
-document.addEventListener("DOMContentLoaded", app.init);
+document.addEventListener("DOMContentLoaded", () => {
+  app.init();
+  app.initDB();
+});

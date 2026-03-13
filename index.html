@@ -5,6 +5,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SharePeer - Secure & Fast Peer-to-Peer File Transfer</title>
+    <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' https://unpkg.com https://cdnjs.cloudflare.com wss://*.peerjs.com https://*.peerjs.com stun:* turn:*; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' wss://*.peerjs.com https://*.peerjs.com stun:* turn:*; object-src 'none'; frame-ancestors 'none'; base-uri 'self';">
+    <style id="antiClickjack">
+        body {
+            display: none !important;
+        }
+    </style>
+    <script type="text/javascript">
+        if (self === top) {
+            var antiClickjack = document.getElementById("antiClickjack");
+            antiClickjack.parentNode.removeChild(antiClickjack);
+        } else {
+            top.location = self.location;
+        }
+    </script>
     <meta name="description"
         content="SharePeer: Secure, private, and fast peer-to-peer file sharing directly in your browser. No intermediaries, no file size limits, and no registration required.">
     <meta name="keywords"
@@ -74,8 +89,15 @@
             }
         }
     </script>
-    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"
+        integrity="sha384-PMNj1TmCgXfW24/rfIyxYSAWwj2mffkMfguUWv08iNFcy0kTC0JN7E/tE+pJ7+fa"
+        crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"
+        integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU"
+        crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"
+        integrity="sha384-cwS6YdhLI7XS60eoDiC+egV0qHp8zI+Cms46R0nbn8JrmoAzV9uFL60etMZhAnSu"
+        crossorigin="anonymous"></script>
     <style>
         @font-face {
             font-family: 'Space Grotesk';
@@ -213,7 +235,7 @@
             <span class="font-display font-bold text-xl tracking-tight">SharePeer</span>
         </div>
         <div class="text-xs font-mono text-slate-400 border border-slate-800 rounded-full px-3 py-1 glass">
-            v1.0.1
+            v1.0.2
         </div>
     </nav>
 
@@ -325,14 +347,18 @@
             <div id="drop-zone"
                 class="w-full h-64 border-2 border-dashed border-slate-600 rounded-2xl flex flex-col items-center justify-center hover:border-brand-accent hover:bg-brand-accent/5 transition-all cursor-pointer relative glass">
                 <input type="file" id="file-input" multiple
-                    class="absolute inset-0 w-full h-full opacity-0 cursor-pointer">
+                    class="absolute inset-0 w-full h-full opacity-0 cursor-pointer text-[0]">
                 <div class="text-center p-6 transition-all" id="drop-content-empty">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 mx-auto text-slate-500 mb-4" fill="none"
                         viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
                     </svg>
                     <p class="text-lg font-medium text-slate-300">Drag & Drop or Click to Select</p>
-                    <p class="text-sm text-slate-500">Support matching via code generation</p>
+                    <p class="text-sm text-slate-500 mb-4">Support matching via code generation</p>
+                    <button id="btn-paste" onclick="app.triggerPasteFromButton(event)"
+                        class="relative z-10 py-2 px-6 rounded-lg bg-slate-800 border border-slate-600 hover:bg-slate-700 text-slate-300 transition-colors shadow-sm text-sm font-medium">
+                        <span class="pointer-events-none">Paste from Clipboard</span>
+                    </button>
                 </div>
             </div>
 
@@ -342,7 +368,7 @@
             <button id="btn-ready"
                 class="hidden w-full py-4 rounded-xl bg-blue-600 text-white font-medium text-lg hover:bg-blue-500 transition-colors shadow-lg shadow-blue-600/10 active:scale-[0.98] outline-none"
                 onclick="app.generateCode()">
-                Get Connection Code
+                Let's Get Started!
             </button>
 
             <div id="code-display-area" class="hidden w-full flex-col items-center gap-6 animate-fade-in-up">
@@ -372,21 +398,21 @@
                 <div class="flex gap-2 items-center justify-center w-full">
                     <input type="text" maxlength="3" class="code-input w-24 h-16 rounded-xl uppercase" id="code-1"
                         placeholder="ABC" oninput="app.handleInputMove(this, 'code-2')"
-                        onkeydown="app.handleBackspace(event, this, null)" onpaste="app.handlePaste(event)">
+                        onkeydown="app.handleInputKeydown(event, this, null)" onpaste="app.handlePaste(event)">
                     <span class="text-slate-500 text-2xl">-</span>
                     <input type="text" maxlength="3" class="code-input w-24 h-16 rounded-xl uppercase" id="code-2"
                         placeholder="123" oninput="app.handleInputMove(this, 'code-3')"
-                        onkeydown="app.handleBackspace(event, this, 'code-1')" onpaste="app.handlePaste(event)">
+                        onkeydown="app.handleInputKeydown(event, this, 'code-1')" onpaste="app.handlePaste(event)">
                     <span class="text-slate-500 text-2xl">-</span>
                     <input type="text" maxlength="3" class="code-input w-24 h-16 rounded-xl uppercase" id="code-3"
                         placeholder="DEF" oninput="app.handleInputMove(this, null)"
-                        onkeydown="app.handleBackspace(event, this, 'code-2')" onpaste="app.handlePaste(event)">
+                        onkeydown="app.handleInputKeydown(event, this, 'code-2')" onpaste="app.handlePaste(event)">
                 </div>
 
                 <button id="btn-connect"
                     class="w-full py-4 rounded-xl bg-blue-600 text-white font-medium text-lg hover:bg-blue-500 transition-colors shadow-lg shadow-blue-600/10 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed outline-none"
-                    onclick="app.connectToPeer()">
-                    Connect & Receive
+                    onclick="app.requestConnection()">
+                    Let's Get It!
                 </button>
             </div>
         </section>
@@ -404,6 +430,14 @@
             <div class="flex justify-between items-start mb-6">
                 <h3 class="text-xl font-bold font-display text-white">Transferring Files...</h3>
                 <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-brand-accent"></div>
+            </div>
+
+            <div id="security-code-display"
+                class="mb-6 p-3 bg-slate-800/80 rounded-xl border border-white/5 flex flex-col items-center gap-2 hidden">
+                <span class="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Security Verification
+                    Code</span>
+                <div id="security-code-value" class="text-2xl font-mono font-bold text-brand-accent tracking-[0.2em]">
+                    000 000</div>
             </div>
 
             <div class="w-full bg-slate-800 rounded-full h-2 mb-2 overflow-hidden">
@@ -452,7 +486,7 @@
             <div class="grid grid-cols-1 gap-4 flex-shrink-0">
                 <button onclick="app.discardFile()"
                     class="py-3 px-4 rounded-xl bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white transition font-medium w-full border border-slate-700">
-                    Close & Finish
+                    Let's Finish This!
                 </button>
             </div>
             <p class="text-center text-xs text-amber-500/60 mt-4">Downloaded files are saved. Unsaved ones are lost on
@@ -462,6 +496,56 @@
 
     <div id="toast-container"
         class="fixed top-6 left-1/2 -translate-x-1/2 z-[100] flex flex-col items-center gap-3 pointer-events-none w-full max-w-sm px-4">
+    </div>
+
+    <div id="security-warning-modal"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md hidden p-4 opacity-0 transition-opacity duration-300">
+        <div
+            class="bg-slate-900 border border-amber-500/30 p-8 rounded-2xl w-full max-w-lg shadow-2xl relative overflow-hidden flex flex-col transform scale-95 transition-transform duration-300 mx-auto">
+            <div class="absolute -top-10 -right-10 w-32 h-32 bg-amber-500/10 rounded-full blur-3xl pointer-events-none">
+            </div>
+
+            <div class="text-center mb-6 flex-shrink-0">
+                <div class="w-16 h-16 bg-amber-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-amber-400" fill="none"
+                        viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                </div>
+                <h3 class="text-2xl font-bold font-display text-white">Connection Security</h3>
+                <p class="text-slate-300 text-sm mt-3 leading-relaxed">
+                    If the P2P connection is valid, the connection will be established directly between devices without
+                    a server.
+                    <strong class="text-amber-400 font-semibold">Your IP address will be sent to the other party for
+                        matching.</strong>
+                </p>
+                <p class="text-slate-400 text-xs mt-2 italic">
+                    Please do not establish the connection if you are not the person who received the code or someone
+                    you trust.
+                </p>
+            </div>
+
+            <div class="flex flex-col gap-4 mb-6 text-sm">
+                <label class="flex items-start gap-3 cursor-pointer group">
+                    <input type="checkbox" id="sec-cb-trust"
+                        class="w-5 h-5 mt-0.5 rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500 focus:ring-offset-slate-900">
+                    <span class="text-slate-300 select-none">I accept that the code I will connect to belongs to me or
+                        someone I trust.</span>
+                </label>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4 flex-shrink-0 mt-auto">
+                <button onclick="app.cancelConnection()"
+                    class="py-3 px-4 rounded-xl bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white transition font-medium w-full border border-slate-700 outline-none">
+                    Cancel
+                </button>
+                <button onclick="app.confirmConnection()" id="btn-sec-confirm" disabled
+                    class="py-3 px-4 rounded-xl bg-blue-600 text-white font-medium w-full transition shadow-lg outline-none opacity-50 cursor-not-allowed">
+                    Proceed
+                </button>
+            </div>
+        </div>
     </div>
 
     <style>
