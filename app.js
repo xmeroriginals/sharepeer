@@ -12,6 +12,10 @@ const app = {
   isFileHeld: false,
   ecdhKeyPair: null,
   sharedSecret: null,
+  identityKeyPair: null,
+  trustedPeers: [],
+  stealthListeners: [],
+  activeConnections: 0,
 
   init: async () => {
     const dropZone = document.getElementById("drop-zone");
@@ -178,6 +182,9 @@ const app = {
     app.receivedFilesList = [];
     app.isTransferring = false;
     app.isFileHeld = false;
+    app.isStealthConnection = false;
+    app.connectedPeerPubKey = null;
+    app.connectedPeerName = null;
 
     const dropContent = document.getElementById("drop-content-empty");
     const fileList = document.getElementById("file-list");
@@ -197,6 +204,10 @@ const app = {
 
     const inputs = document.querySelectorAll(".code-input");
     inputs.forEach((i) => (i.value = ""));
+
+    if (app.role === "receiver") {
+        app.startStealthListeners(true);
+    }
   },
 
   handleFiles: (fileList) => {
@@ -421,6 +432,7 @@ const app = {
 
       console.log("Incoming connection...");
       app.conn = conn;
+      app.showAuthModal("Securing Connection...");
       app.setupConnectionHandlers(conn);
     });
 
@@ -474,10 +486,18 @@ const app = {
       console.log("Connected to: " + conn.peer);
       app.conn = conn;
 
-      if (app.role === "sender") {
-        const challenge = Math.random().toString(36).substring(2, 10);
-        app.powChallenge = challenge;
-        conn.send({ type: 'pow_challenge', challenge: challenge });
+      if (app.isStealthConnection) {
+        if (app.role === "sender") {
+          app.ecdsaChallenge = Math.random().toString(36).substring(2, 10);
+          app.showAuthModal("Securing Stealth Link...");
+          conn.send({ type: 'ecdsa_challenge', challenge: app.ecdsaChallenge });
+        }
+      } else {
+        if (app.role === "sender") {
+          const challenge = Math.random().toString(36).substring(2, 10);
+          app.powChallenge = challenge;
+          conn.send({ type: 'pow_challenge', challenge: challenge });
+        }
       }
     });
 
@@ -726,7 +746,7 @@ const app = {
         connected = true;
         app.conn = conn;
         document.getElementById("btn-connect").innerText = "Authenticating...";
-        app.showToast("Connected! Securing connection...", "success");
+        app.showAuthModal("Securing Connection...");
         app.setupConnectionHandlers(conn);
       });
 
@@ -814,11 +834,35 @@ const app = {
         );
       }
 
-      app.toggleTransferPopup(false);
+      if (!app.isStealthConnection) {
+        if (!document.getElementById("trust-prompt-container")) {
+          const tc = document.createElement("div");
+          tc.id = "trust-prompt-container";
+          tc.className = "mt-4 flex flex-col items-center";
+          tc.innerHTML = `<button onclick="app.sendTrustRequest()" class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl text-sm font-bold w-full transition">Add Device to Trusted</button>`;
+          document.getElementById("transfer-content").appendChild(tc);
+        }
 
-      setTimeout(() => {
-        app.closeSession();
-      }, 3000);
+        const pBar = document.getElementById("transfer-progress-bar");
+        if (pBar) pBar.parentElement.style.display = 'none';
+        const stxt = document.getElementById("transfer-status-text");
+        if (stxt) stxt.style.display = 'none';
+
+        const tit = document.querySelector("#transfer-content h3");
+        if (tit) tit.innerText = "Files Sent Successfully!";
+
+        const closeBtn = document.createElement("button");
+        closeBtn.innerText = "Close Session";
+        closeBtn.className = "mt-2 bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2 rounded-xl text-sm transition w-full";
+        closeBtn.onclick = () => { app.toggleTransferPopup(false); app.closeSession(); document.getElementById("trust-prompt-container").remove(); closeBtn.remove(); };
+        document.getElementById("transfer-content").appendChild(closeBtn);
+
+      } else {
+        app.toggleTransferPopup(false);
+        setTimeout(() => {
+          app.closeSession();
+        }, 3000);
+      }
       return;
     }
 
@@ -956,6 +1000,33 @@ const app = {
           }
         }
         return;
+      } else if (data.type === 'ecdsa_challenge') {
+        try {
+          const myChallenge = Math.random().toString(36).substring(2, 10);
+          app.ecdsaChallenge = myChallenge;
+          const signature = await app.signWithIdentity(data.challenge);
+          app.conn.send({ type: 'ecdsa_solution', signature: Array.from(new Uint8Array(signature)), myChallenge: myChallenge });
+        } catch (e) { app.conn.close(); }
+        return;
+      } else if (data.type === 'ecdsa_solution') {
+        try {
+          const sig = new Uint8Array(data.signature).buffer;
+          const isValid = await app.verifyWithIdentity(app.connectedPeerPubKey, sig, app.ecdsaChallenge);
+          if (isValid) {
+            const mySig = await app.signWithIdentity(data.myChallenge);
+            app.conn.send({ type: 'ecdsa_verify', signature: Array.from(new Uint8Array(mySig)) });
+            app.finalizeSecretHandshake();
+          } else { app.conn.close(); }
+        } catch (e) { app.conn.close(); }
+        return;
+      } else if (data.type === 'ecdsa_verify') {
+        try {
+          const sig = new Uint8Array(data.signature).buffer;
+          const isValid = await app.verifyWithIdentity(app.connectedPeerPubKey, sig, app.ecdsaChallenge);
+          if (isValid) app.finalizeSecretHandshake();
+          else app.conn.close();
+        } catch (e) { app.conn.close(); }
+        return;
       } else if (data.type === "ecdh_exchange") {
         try {
           const importedPubKey = await crypto.subtle.importKey(
@@ -973,18 +1044,28 @@ const app = {
             const exportedMyPubKey = await crypto.subtle.exportKey("jwk", app.ecdhKeyPair.publicKey);
             app.conn.send({ type: "ecdh_exchange", pubKey: exportedMyPubKey });
             await app.generateFingerprint(importedPubKey);
-            app.toggleTransferPopup(true);
-            app.updateProgress(0, "Waiting for files...");
+            if (!app.isStealthConnection) {
+              app.toggleTransferPopup(true);
+              app.updateProgress(0, "Waiting for files...");
+            }
           } else if (app.role === "sender") {
             app.showToast("E2EE Key Established!", "success");
             await app.generateFingerprint(importedPubKey);
-            setTimeout(() => app.startFileTransfer(), 500);
+            if (!app.isStealthConnection) {
+              setTimeout(() => app.startFileTransfer(), 500);
+            }
           }
         } catch (e) {
           console.error("ECDH Exchange Error", e);
           app.showToast("E2EE Handshake Failed", "error");
           app.conn.close();
         }
+        return;
+      } else if (data.type === "trust_request") {
+        app.handleTrustRequest(data);
+        return;
+      } else if (data.type === "trust_accepted") {
+        app.handleTrustAccepted(data);
         return;
       }
 
@@ -1076,20 +1157,296 @@ const app = {
   dbReady: false,
   db: null,
   initDB: () => {
-    const request = indexedDB.open("SharePeerDB", 1);
-    request.onupgradeneeded = (e) => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains("files")) {
-        db.createObjectStore("files");
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open("SharePeerDB", 2);
+      request.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains("files")) {
+          db.createObjectStore("files");
+        }
+        if (!db.objectStoreNames.contains("keys")) {
+          db.createObjectStore("keys");
+        }
+        if (!db.objectStoreNames.contains("peers")) {
+          db.createObjectStore("peers", { keyPath: "publicKey" });
+        }
+      };
+      request.onsuccess = async (e) => {
+        app.db = e.target.result;
+        app.dbReady = true;
+
+        try {
+          const transaction = app.db.transaction("files", "readwrite");
+          transaction.objectStore("files").clear();
+        } catch (err) { }
+
+        await app.loadIdentityKey();
+        await app.loadTrustedPeers();
+        resolve();
+      };
+      request.onerror = (e) => {
+        console.error("IndexedDB error", e);
+        reject(e);
+      };
+    });
+  },
+
+  loadIdentityKey: async () => {
+    return new Promise((resolve, reject) => {
+      const transaction = app.db.transaction("keys", "readwrite");
+      const store = transaction.objectStore("keys");
+      const request = store.get("identityKey");
+
+      request.onsuccess = async (e) => {
+        if (e.target.result) {
+          app.identityKeyPair = e.target.result;
+          resolve();
+        } else {
+          try {
+            app.identityKeyPair = await crypto.subtle.generateKey(
+              { name: "ECDSA", namedCurve: "P-384" },
+              false,
+              ["sign", "verify"]
+            );
+            const putReq = store.put(app.identityKeyPair, "identityKey");
+            putReq.onsuccess = () => resolve();
+            putReq.onerror = () => reject();
+          } catch (err) {
+            console.error(err);
+            reject(err);
+          }
+        }
+      };
+      request.onerror = () => reject();
+    });
+  },
+
+  loadTrustedPeers: async () => {
+    return new Promise((resolve, reject) => {
+      const transaction = app.db.transaction("peers", "readonly");
+      const store = transaction.objectStore("peers");
+      const request = store.getAll();
+
+      request.onsuccess = (e) => {
+        app.trustedPeers = e.target.result || [];
+        app.renderTrustedPeers();
+        app.startStealthListeners();
+        resolve();
+      };
+      request.onerror = () => reject();
+    });
+  },
+
+  saveTrustedPeer: async (publicKeyStr, name) => {
+    return new Promise((resolve, reject) => {
+      const transaction = app.db.transaction("peers", "readwrite");
+      const store = transaction.objectStore("peers");
+      const peerData = { publicKey: publicKeyStr, name: name, addedAt: Date.now() };
+      const request = store.put(peerData);
+      request.onsuccess = () => {
+        const existing = app.trustedPeers.findIndex(p => p.publicKey === publicKeyStr);
+        if (existing > -1) app.trustedPeers[existing] = peerData;
+        else app.trustedPeers.push(peerData);
+        app.renderTrustedPeers();
+        resolve();
+      };
+      request.onerror = () => reject();
+    });
+  },
+
+  deleteTrustedPeer: async (publicKeyStr) => {
+    return new Promise((resolve, reject) => {
+      const transaction = app.db.transaction("peers", "readwrite");
+      const store = transaction.objectStore("peers");
+      const request = store.delete(publicKeyStr);
+      request.onsuccess = () => {
+        app.trustedPeers = app.trustedPeers.filter(p => p.publicKey !== publicKeyStr);
+        app.renderTrustedPeers();
+        app.startStealthListeners();
+        resolve();
+      };
+      request.onerror = () => reject();
+    });
+  },
+
+  generateStealthPeerId: async (publicKeyStr, role, stepOffset = 0) => {
+    const timeStep = Math.floor(Date.now() / 600000) + stepOffset;
+    const enc = new TextEncoder();
+    const keyMaterial = await crypto.subtle.importKey(
+      "raw", enc.encode(publicKeyStr + (role === 'receiver' ? '-rcv' : '-snd')), { name: "PBKDF2" }, false, ["deriveBits", "deriveKey"]
+    );
+    const bits = await crypto.subtle.deriveBits(
+      { name: "PBKDF2", salt: enc.encode(timeStep.toString()), iterations: 10000, hash: "SHA-256" },
+      keyMaterial, 128
+    );
+    const hashHex = Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2, '0')).join('');
+    return `spf-stealth-${hashHex}`;
+  },
+
+  startStealthListeners: async (skipPrompt = false) => {
+    if (app.role === "sender") return;
+
+    if (app.isTransferring || (app.conn && app.conn.open)) return;
+
+    if (app.stealthRefreshInterval) clearInterval(app.stealthRefreshInterval);
+    app.stealthRefreshInterval = setInterval(() => {
+      app.startStealthListeners(true);
+    }, 10 * 60 * 1000);
+
+    app.stealthListeners.forEach(p => { if (!p.destroyed) p.destroy(); });
+    app.stealthListeners = [];
+
+    let peersToListen = app.trustedPeers;
+    if (peersToListen.length > 5 && !skipPrompt) {
+      if (!confirm(`You have ${peersToListen.length} saved devices. Listening to all at once may use more resources.\n\nDo you want to listen to all of them simultaneously? (Checking 'Cancel' will queue them and listen in rotation)`)) {
+        app.stealthQueueIndex = 0;
+        app.startStealthRotation();
+        return;
+      }
+    }
+
+    app._listenToPeers(peersToListen);
+  },
+
+  startStealthRotation: () => {
+    if (app.stealthRotationInterval) clearInterval(app.stealthRotationInterval);
+
+    const listenNextBatch = () => {
+      if (app.isTransferring || (app.conn && app.conn.open)) return;
+
+      app.stealthListeners.forEach(p => { if (!p.destroyed) p.destroy(); });
+      app.stealthListeners = [];
+
+      const batch = app.trustedPeers.slice(app.stealthQueueIndex, app.stealthQueueIndex + 5);
+      app._listenToPeers(batch);
+
+      app.stealthQueueIndex += 5;
+      if (app.stealthQueueIndex >= app.trustedPeers.length) app.stealthQueueIndex = 0;
+    };
+
+    listenNextBatch();
+    app.stealthRotationInterval = setInterval(listenNextBatch, 15000);
+  },
+
+  _listenToPeers: (peers) => {
+    peers.forEach(async (peer) => {
+      const stealthId = await app.generateStealthPeerId(peer.publicKey, 'receiver', app.clockOffset || 0);
+      const stealthPeer = new Peer(stealthId, {
+        debug: 1,
+        config: { iceServers: [{ url: "stun:stun.l.google.com:19302" }] },
+      });
+
+      stealthPeer.on("open", (id) => console.log("Stealth listening on: " + id));
+
+      stealthPeer.on("connection", (conn) => {
+        if (app.conn && app.conn.open) {
+          conn.close();
+          return;
+        }
+        console.log("Incoming stealth connection...");
+        app.conn = conn;
+        app.isStealthConnection = true;
+        app.connectedPeerPubKey = peer.publicKey;
+        app.connectedPeerName = peer.name;
+        app.setupConnectionHandlers(conn);
+      });
+
+      stealthPeer.on("error", (err) => {
+        if (err.type === "unavailable-id") { }
+      });
+      app.stealthListeners.push(stealthPeer);
+    });
+  },
+
+  manualSyncClock: async () => {
+    const choice = confirm("Cihazınızı göremiyor musunuz? Saat farkından dolayı bağlantı kurulamıyor olabilir. Eski bağlantı ID'lerini (10 dk öncesi) dinlemek ister misiniz?\n\nTamam: -10 dk (Geçmiş)\nİptal: Normal (Şu an)");
+    if (choice) {
+      app.clockOffset = -1;
+      app.showToast("Listening to previous time window...", "info");
+    } else {
+      app.clockOffset = 0;
+      app.showToast("Listening to current time window...", "info");
+    }
+    app.startStealthListeners(true);
+  },
+
+  connectToStealthPeer: async (trustedPeer) => {
+    app.showAuthModal("Connecting to Trusted Peer...");
+
+    let peerInst = new Peer({ debug: 1, config: { iceServers: [{ url: "stun:stun.l.google.com:19302" }] } });
+
+    const attemptConnect = async (offset) => {
+      const stealthId = await app.generateStealthPeerId(trustedPeer.publicKey, 'receiver', offset);
+      const conn = peerInst.connect(stealthId, { reliable: true });
+      let connected = false;
+
+      conn.on("open", () => {
+        connected = true;
+        app.conn = conn;
+        app.isStealthConnection = true;
+        app.connectedPeerPubKey = trustedPeer.publicKey;
+        app.connectedPeerName = trustedPeer.name;
+        app.showAuthModal("Authenticating...");
+        app.setupConnectionHandlers(conn);
+      });
+
+      conn.on("error", () => { if (!connected) handleFail(offset); });
+      conn.on("close", () => { if (!connected) handleFail(offset); });
+
+      setTimeout(() => {
+        if (!connected && !conn.open) { conn.close(); handleFail(offset); }
+      }, 5000);
+
+      function handleFail(off) {
+        if (off === 0) attemptConnect(-1);
+        else {
+          app.hideAuthModal();
+          app.showToast("Could not find peer. They might be offline.", "error");
+          peerInst.destroy();
+        }
       }
     };
-    request.onsuccess = (e) => {
-      app.db = e.target.result;
-      app.dbReady = true;
-      const transaction = app.db.transaction("files", "readwrite");
-      transaction.objectStore("files").clear();
-    };
-    request.onerror = (e) => console.error("IndexedDB error", e);
+
+    if (peerInst.open) attemptConnect(0);
+    else peerInst.on("open", () => attemptConnect(0));
+  },
+
+  renderTrustedPeers: () => {
+    const list = document.getElementById("trusted-peers-list");
+    if (!list) return;
+
+    list.innerHTML = "";
+    if (app.trustedPeers.length === 0) {
+      list.innerHTML = "<p class='text-slate-500 text-sm'>No saved peers</p>";
+      return;
+    }
+
+    app.trustedPeers.forEach(peer => {
+      const div = document.createElement("div");
+      div.className = "flex items-center justify-between p-3 bg-slate-800 rounded-lg border border-slate-700";
+      const safeName = window.DOMPurify ? window.DOMPurify.sanitize(peer.name) : peer.name;
+      div.innerHTML = `
+          <div class="flex items-center gap-3">
+             <div class="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center">
+                 <svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+             </div>
+             <div class="text-sm font-medium text-slate-200">${safeName}</div>
+          </div>
+          <div class="flex gap-2">
+             <button onclick="app.connectToStealthPeer(app.trustedPeers.find(p => p.publicKey === '${peer.publicKey}'))" class="text-blue-400 hover:text-blue-300 text-xs bg-blue-500/10 px-2 py-1 rounded">Connect</button>
+             <button onclick="app.deleteTrustedPeer('${peer.publicKey}')" class="text-red-400 hover:text-red-300 text-xs bg-red-500/10 px-2 py-1 rounded">Delete</button>
+          </div>
+       `;
+      list.appendChild(div);
+    });
+
+    const syncDiv = document.createElement('div');
+    syncDiv.className = "mt-2 flex self-center justify-center w-full";
+    syncDiv.innerHTML = `<button onclick="app.manualSyncClock()" class="text-amber-400 hover:text-amber-300 text-xs flex items-center gap-1 transition">
+      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+      Cihazınızı göremiyor musunuz?
+    </button>`;
+    list.appendChild(syncDiv);
   },
 
   saveToIndexedDB: (id, blob) => {
@@ -1182,6 +1539,33 @@ const app = {
     const modal = document.getElementById("file-received-modal");
     modal.classList.remove("hidden");
     modal.classList.add("flex");
+    const trustBtn = document.getElementById('btn-receiver-trust');
+    if (trustBtn) {
+      trustBtn.style.display = app.isStealthConnection ? 'none' : 'block';
+    }
+  },
+
+  showTrustedPeers: () => {
+    app.renderTrustedPeers();
+    const modal = document.getElementById("trusted-peers-modal");
+    modal.classList.remove("hidden");
+    setTimeout(() => {
+      modal.classList.remove("opacity-0");
+      const div = modal.querySelector("div");
+      div.classList.remove("scale-95");
+      div.classList.add("scale-100");
+    }, 10);
+  },
+
+  hideTrustedPeers: () => {
+    const modal = document.getElementById("trusted-peers-modal");
+    modal.classList.add("opacity-0");
+    const div = modal.querySelector("div");
+    div.classList.remove("scale-100");
+    div.classList.add("scale-95");
+    setTimeout(() => {
+      modal.classList.add("hidden");
+    }, 300);
   },
 
   toggleTransferPopup: (show) => {
@@ -1195,6 +1579,7 @@ const app = {
         c.classList.add("scale-100");
       }, 10);
       app.isTransferring = true;
+      app.checkWakeLock();
     } else {
       p.classList.add("opacity-0");
       c.classList.remove("scale-100");
@@ -1203,12 +1588,144 @@ const app = {
         p.classList.add("hidden");
       }, 300);
       app.isTransferring = false;
+      app.releaseWakeLock();
     }
   },
 
   updateProgress: (val, text) => {
-    document.getElementById("transfer-progress-bar").style.width = val + "%";
-    if (text) document.getElementById("transfer-status-text").innerText = text;
+    const pBar = document.getElementById("transfer-progress-bar");
+    if (pBar) pBar.style.width = val + "%";
+    const stxt = document.getElementById("transfer-status-text");
+    if (stxt && text) stxt.innerText = text;
+  },
+
+  getExportedIdentityKey: async () => {
+    if (!app.identityKeyPair) return null;
+    const jwk = await crypto.subtle.exportKey("jwk", app.identityKeyPair.publicKey);
+    return JSON.stringify(jwk);
+  },
+
+  signWithIdentity: async (dataStr) => {
+    const enc = new TextEncoder();
+    return await crypto.subtle.sign(
+      { name: "ECDSA", hash: { name: "SHA-384" } },
+      app.identityKeyPair.privateKey,
+      enc.encode(dataStr)
+    );
+  },
+
+  verifyWithIdentity: async (pubKeyStr, signatureBuf, dataStr) => {
+    try {
+      const enc = new TextEncoder();
+      const jwk = JSON.parse(pubKeyStr);
+      const pubKey = await crypto.subtle.importKey(
+        "jwk", jwk, { name: "ECDSA", namedCurve: "P-384" }, true, ["verify"]
+      );
+      return await crypto.subtle.verify(
+        { name: "ECDSA", hash: { name: "SHA-384" } },
+        pubKey,
+        signatureBuf,
+        enc.encode(dataStr)
+      );
+    } catch (err) { return false; }
+  },
+
+  finalizeSecretHandshake: async () => {
+    app.hideAuthModal();
+    app.showToast("Stealth Authentication Successful!", "success");
+
+    const statusEl = document.getElementById("connection-status");
+    if (statusEl) {
+      statusEl.innerHTML = `
+           <div class="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.5)]"></div>
+           <svg class="w-4 h-4 text-emerald-400" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+           <span class="font-bold text-emerald-400" title="Şifreli & Doğrulanmış Cihaz">${window.DOMPurify ? window.DOMPurify.sanitize(app.connectedPeerName) : app.connectedPeerName}</span>
+       `;
+      statusEl.classList.remove("text-amber-400", "bg-amber-400/10", "border-amber-400/20");
+      statusEl.classList.add("text-emerald-400", "bg-emerald-400/10", "border-emerald-400/20");
+    }
+
+    const exportedPubKey = await crypto.subtle.exportKey("jwk", app.ecdhKeyPair.publicKey);
+    app.conn.send({ type: "ecdh_exchange", pubKey: exportedPubKey });
+
+    if (app.role === 'sender') {
+      setTimeout(() => app.startFileTransfer(), 500);
+    } else {
+      app.toggleTransferPopup(true);
+      app.updateProgress(0, "Waiting for files...");
+    }
+  },
+
+  showAuthModal: (msg) => {
+    app.requestWakeLock();
+    app.toggleTransferPopup(true);
+    const pBar = document.getElementById("transfer-progress-bar");
+    if (pBar) pBar.parentElement.style.display = 'none';
+    app.updateProgress(0, msg);
+    const tit = document.querySelector("#transfer-content h3");
+    if (tit) tit.innerText = "Securing Connection...";
+  },
+
+  hideAuthModal: () => {
+    app.releaseWakeLock();
+    const pBar = document.getElementById("transfer-progress-bar");
+    if (pBar) pBar.parentElement.style.display = 'block';
+    const tit = document.querySelector("#transfer-content h3");
+    if (tit) tit.innerText = "Transferring Files...";
+  },
+
+  sendTrustRequest: async () => {
+    const rootCont = document.getElementById('trust-prompt-container');
+    if (rootCont) rootCont.innerHTML = `<span class="text-sm text-amber-400">Request Sent. Waiting...</span>`;
+
+    app.conn.send({
+      type: "trust_request",
+      pubKey: await app.getExportedIdentityKey(),
+      name: prompt("Enter a name for this device so you can identify it:", "Peer_" + Math.floor(Math.random() * 10000)) || "Peer"
+    });
+  },
+
+  handleTrustRequest: (data) => {
+    const rootCont = document.getElementById('trust-prompt-container') || document.getElementById('file-received-modal');
+    if (!rootCont) return;
+
+    const div = document.createElement('div');
+    div.className = "mt-4 p-4 bg-amber-500/10 border border-amber-500/30 rounded-xl";
+    div.innerHTML = `
+      <p class="text-amber-400 text-sm font-bold mb-2">Peer wants to save you as Trusted Device</p>
+      <div class="flex gap-2">
+        <button onclick="app.acceptTrustRequest('${btoa(data.pubKey)}', '${data.name}')" class="bg-amber-600 hover:bg-amber-500 text-white px-3 py-1 rounded text-xs font-bold w-full">Accept & Add</button>
+      </div>
+    `;
+
+    if (document.getElementById('trust-prompt-container')) {
+      document.getElementById('trust-prompt-container').innerHTML = '';
+      document.getElementById('trust-prompt-container').appendChild(div);
+    } else {
+      rootCont.querySelector('.grid').insertAdjacentElement('beforebegin', div);
+    }
+  },
+
+  acceptTrustRequest: async (b64PubKey, peerName) => {
+    const pubKey = atob(b64PubKey);
+    await app.saveTrustedPeer(pubKey, peerName);
+    const myName = prompt("Enter your name for this device (so they know you):", "MyDevice") || "MyDevice";
+    app.conn.send({
+      type: "trust_accepted",
+      pubKey: await app.getExportedIdentityKey(),
+      name: myName
+    });
+    app.showToast("Added to Trusted Devices!", "success");
+    const container = document.getElementById('trust-prompt-container') || document.getElementById('file-received-modal');
+    const amberBox = container.querySelector('.bg-amber-500\\/10');
+    if (amberBox) amberBox.innerHTML = '<span class="text-emerald-400 text-sm font-bold">Device added to trusted list.</span>';
+  },
+
+  handleTrustAccepted: async (data) => {
+    await app.saveTrustedPeer(data.pubKey, data.name);
+    app.showToast("Peer accepted your device! Added to Trusted.", "success");
+    const rootCont = document.getElementById('trust-prompt-container');
+    if (rootCont) rootCont.innerHTML = '<span class="text-emerald-400 text-sm font-bold">Verified & Added!</span>';
   },
 
   formatSize: (bytes) => {
@@ -1428,7 +1945,7 @@ const app = {
   },
 };
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
+  await app.initDB();
   app.init();
-  app.initDB();
 });
