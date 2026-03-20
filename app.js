@@ -16,6 +16,13 @@ const app = {
   trustedPeers: [],
   stealthListeners: [],
   activeConnections: 0,
+  myPublicIPHash: null,
+  presencePeer: null,
+  discoveredPeers: {},
+  discoveryInterval: null,
+  lastBroadcastCode: null,
+  myDeviceName: 'Peer_' + Math.floor(Math.random() * 9000 + 1000),
+
 
   init: async () => {
     const dropZone = document.getElementById("drop-zone");
@@ -83,6 +90,42 @@ const app = {
     } catch (e) {
       console.error("ECDH Init Error", e);
     }
+
+    app.fetchPublicIP();
+    await app.initDB();
+  },
+
+  fetchPublicIP: async () => {
+    if (app._fetchingIP) return;
+    app._fetchingIP = true;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      const res = await fetch('https://api.ipify.org?format=json', { signal: controller.signal });
+      const data = await res.json();
+      clearTimeout(timeoutId);
+      const ip = data.ip;
+      app.myPublicIPHash = await app._simpleHash(ip);
+      console.log("Network identity established.");
+      if (app.identityKeyPair) {
+        app.startPresenceBroadcast();
+      }
+    } catch (e) {
+      console.warn("Public IP check failed, local discovery might be limited.", e);
+      app.myPublicIPHash = "local-only";
+      if (app.identityKeyPair) {
+        app.startPresenceBroadcast();
+      }
+    } finally {
+      app._fetchingIP = false;
+    }
+  },
+
+  _simpleHash: async (str) => {
+    const enc = new TextEncoder();
+    const data = enc.encode(str);
+    const hash = await crypto.subtle.digest("SHA-256", data);
+    return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 8);
   },
 
   cleanUrl: () => {
@@ -92,12 +135,14 @@ const app = {
     window.history.replaceState({}, document.title, url.pathname);
   },
 
-  goHome: () => {
+  goHome: async () => {
     if (app.isFileHeld) {
       if (
-        !confirm(
-          "You have unsaved files. Are you sure you want to discard them?"
-        )
+        !(await app.showDialog({
+          title: "Unsaved Files",
+          message: "You have unsaved files. Are you sure you want to discard them?",
+          type: "confirm"
+        }))
       )
         return;
       app.discardFile();
@@ -206,8 +251,15 @@ const app = {
     inputs.forEach((i) => (i.value = ""));
 
     if (app.role === "receiver") {
-        app.startStealthListeners(true);
+      app.startStealthListeners(true);
     }
+
+    if (app.presencePeer) {
+      app.presencePeer.destroy();
+      app.presencePeer = null;
+    }
+    app.discoveredPeers = {};
+    if (app.discoveryInterval) clearInterval(app.discoveryInterval);
   },
 
   handleFiles: (fileList) => {
@@ -364,6 +416,54 @@ const app = {
 
     app.initSenderPeer(rawId);
     app.renderQRCode(rawId);
+    app.startPresenceBroadcast(rawId);
+  },
+
+  startPresenceBroadcast: async (rawId = null) => {
+    if (!app.identityKeyPair) return;
+
+    const pubKey = await crypto.subtle.exportKey("jwk", (await app.loadIdentityKeyOnly()).publicKey);
+    const pubKeyHash = await app._simpleHash(JSON.stringify(pubKey));
+    const presenceId = `spf-p-${app.myPublicIPHash || 'off'}-${pubKeyHash}`;
+
+    if (app.presencePeer && !app.presencePeer.destroyed) {
+      if (app.presenceId === presenceId && app.lastBroadcastCode === rawId) return;
+      app.presencePeer.destroy();
+    }
+
+    app.lastBroadcastCode = rawId;
+    app.presenceId = presenceId;
+
+    app.presencePeer = new Peer(presenceId, {
+      debug: 1,
+      config: { iceServers: [{ url: "stun:stun.l.google.com:19302" }] }
+    });
+
+    app.presencePeer.on('open', () => console.log("Presence broadcasting on:", presenceId));
+    app.presencePeer.on('connection', (conn) => {
+      conn.on('open', () => {
+        conn.send({
+          type: 'presence_info',
+          code: rawId,
+          name: app.myDeviceName || 'SharePeer User',
+          hasFiles: app.filesToSend.length > 0
+        });
+      });
+    });
+
+    app.presencePeer.on('error', (err) => {
+      if (err.type === 'id-taken') console.log("Network ID already active.");
+    });
+  },
+
+  loadIdentityKeyOnly: async () => {
+    const transaction = app.db.transaction("keys", "readonly");
+    const store = transaction.objectStore("keys");
+    const key = await new Promise(r => {
+      const req = store.get("identityKey");
+      req.onsuccess = (e) => r(e.target.result);
+    });
+    return key;
   },
 
   generateSecuredId: async (rawId, stepOffset = 0) => {
@@ -376,7 +476,7 @@ const app = {
       {
         name: "PBKDF2",
         salt: enc.encode(timeStep.toString()),
-        iterations: 100000,
+        iterations: 10000,
         hash: "SHA-256"
       },
       keyMaterial,
@@ -487,16 +587,14 @@ const app = {
       app.conn = conn;
 
       if (app.isStealthConnection) {
-        if (app.role === "sender") {
-          app.ecdsaChallenge = Math.random().toString(36).substring(2, 10);
-          app.showAuthModal("Securing Stealth Link...");
-          conn.send({ type: 'ecdsa_challenge', challenge: app.ecdsaChallenge });
-        }
+        app.ecdsaChallenge = Math.random().toString(36).substring(2, 10);
+        app.showAuthModal("Securing Stealth Link...");
+        conn.send({ type: 'ecdsa_challenge', challenge: app.ecdsaChallenge, role: app.role });
       } else {
         if (app.role === "sender") {
           const challenge = Math.random().toString(36).substring(2, 10);
           app.powChallenge = challenge;
-          conn.send({ type: 'pow_challenge', challenge: challenge });
+          conn.send({ type: 'pow_challenge', challenge: challenge, role: "sender" });
         }
       }
     });
@@ -580,10 +678,14 @@ const app = {
         }));
       }
     }
-    Promise.all(textPromises).then(textFiles => {
+    Promise.all(textPromises).then(async textFiles => {
       const allFiles = [...files, ...textFiles];
       if (allFiles.length > 0) {
-        if (confirm(`Do you want to add ${allFiles.length} item(s) from clipboard to the transfer list?`)) {
+        if (await app.showDialog({
+          title: "Clipboard Detected",
+          message: `Do you want to add ${allFiles.length} item(s) from clipboard to the transfer list?`,
+          type: "confirm"
+        })) {
           app.handleFiles(allFiles);
         }
       }
@@ -612,7 +714,11 @@ const app = {
         }
       }
       if (files.length > 0) {
-        if (confirm(`Do you want to add ${files.length} item(s) from clipboard to the transfer list?`)) {
+        if (await app.showDialog({
+          title: "Clipboard Files",
+          message: `Do you want to add ${files.length} item(s) from clipboard to the transfer list?`,
+          type: "confirm"
+        })) {
           app.handleFiles(files);
         }
       } else {
@@ -734,6 +840,9 @@ const app = {
       });
     }
 
+    app.role = "receiver";
+    app.isStealthConnection = false;
+
     const attemptConnect = async (offset = 0) => {
       if (!app.peer || app.peer.destroyed) return;
 
@@ -762,7 +871,7 @@ const app = {
           conn.close();
           handleFailure(offset);
         }
-      }, 6000);
+      }, 10000);
 
       function handleFailure(failedOffset) {
         if (failedOffset === 0) {
@@ -808,6 +917,8 @@ const app = {
     }
 
     app.sendQueueIndex = 0;
+    app.sendIvCounter = 0;
+    app.sessionIvBase = null;
     app.processNextFileToSend();
   },
 
@@ -901,7 +1012,14 @@ const app = {
         return;
       }
 
-      const iv = crypto.getRandomValues(new Uint8Array(12));
+      if (!app.sessionIvBase) {
+        app.sessionIvBase = crypto.getRandomValues(new Uint8Array(8));
+      }
+      const iv = new Uint8Array(12);
+      iv.set(app.sessionIvBase, 0);
+      const counterView = new DataView(iv.buffer, 8, 4);
+      counterView.setUint32(0, app.sendIvCounter++);
+
       const encrypted = await crypto.subtle.encrypt(
         { name: "AES-GCM", iv }, app.sharedSecret, buffer
       );
@@ -952,31 +1070,46 @@ const app = {
   },
 
   handleIncomingData: (data) => {
+    if (!data || typeof data !== 'object') return;
+    if (typeof data.type !== 'string' && !(data instanceof ArrayBuffer) && !(data instanceof Uint8Array)) return;
+
     app.receiveQueue = (app.receiveQueue || Promise.resolve()).then(async () => {
       if (data.type === 'pow_challenge') {
-        return new Promise(resolve => {
-          let nonce = 0;
-          app.showToast("Securing connection (PoW)...", "info");
+        const workerCode = `
+            self.onmessage = async (e) => {
+                const { challenge, complexity } = e.data;
+                let nonce = 0;
+                const encoder = new TextEncoder();
+                while (true) {
+                    const hash = await crypto.subtle.digest("SHA-256", encoder.encode(challenge + nonce));
+                    const arr = new Uint8Array(hash);
+                    if (arr[0] === 0 && arr[1] === 0 && (arr[2] & 0xC0) === 0) {
+                        self.postMessage({ nonce });
+                        break;
+                    }
+                    nonce++;
+                    if (nonce % 1000 === 0) await new Promise(r => setTimeout(r, 0)); 
+                }
+            };
+        `;
+        const blob = new Blob([workerCode], { type: 'application/javascript' });
+        const worker = new Worker(URL.createObjectURL(blob));
 
-          const attempt = async () => {
-            const encoder = new TextEncoder();
-            for (let i = 0; i < 200; i++) {
-              const hash = await crypto.subtle.digest("SHA-256", encoder.encode(data.challenge + nonce));
-              const hashArray = new Uint8Array(hash);
-              if (hashArray[0] === 0 && hashArray[1] === 0 && (hashArray[2] & 0xC0) === 0) {
-                app.conn.send({ type: 'pow_solution', nonce: nonce });
-                const btn = document.getElementById("btn-connect");
-                if (btn) btn.innerText = "Secured!";
-                resolve();
-                return;
-              }
-              nonce++;
-            }
-            setTimeout(attempt, 0);
-          };
-          attempt();
-        });
+        app.showToast("Solving security challenge (Worker)...", "info");
+        worker.postMessage({ challenge: data.challenge });
+
+        worker.onmessage = (e) => {
+          app.conn.send({ type: 'pow_solution', nonce: e.data.nonce, role: app.role });
+          const btn = document.getElementById("btn-connect");
+          if (btn) btn.innerText = "Secured!";
+          worker.terminate();
+          URL.revokeObjectURL(blob);
+        };
+        return;
       } else if (data.type === 'pow_solution') {
+        if (!app.role && data.role) {
+          app.role = data.role === 'sender' ? 'receiver' : 'sender';
+        }
         if (app.role === "sender") {
           const encoder = new TextEncoder();
           const hash = await crypto.subtle.digest("SHA-256", encoder.encode(app.powChallenge + data.nonce));
@@ -1002,15 +1135,36 @@ const app = {
         return;
       } else if (data.type === 'ecdsa_challenge') {
         try {
+          if (typeof data.challenge !== 'string') return;
+
+          if (!app.role && data.role) {
+            app.role = data.role === 'sender' ? 'receiver' : 'sender';
+            if (app.role === 'sender') app.switchView('send-view');
+            else app.switchView('receive-view');
+          }
+
           const myChallenge = Math.random().toString(36).substring(2, 10);
           app.ecdsaChallenge = myChallenge;
           const signature = await app.signWithIdentity(data.challenge);
-          app.conn.send({ type: 'ecdsa_solution', signature: Array.from(new Uint8Array(signature)), myChallenge: myChallenge });
+          app.conn.send({
+            type: 'ecdsa_solution',
+            signature: Array.from(new Uint8Array(signature)),
+            myChallenge: myChallenge,
+            role: app.role
+          });
         } catch (e) { app.conn.close(); }
         return;
       } else if (data.type === 'ecdsa_solution') {
         try {
+          if (typeof data.myChallenge !== 'string' || !Array.isArray(data.signature)) return;
+
+          if (!app.role && data.role) {
+            app.role = data.role === 'sender' ? 'receiver' : 'sender';
+            if (app.role === 'sender') app.switchView('send-view');
+            else app.switchView('receive-view');
+          }
           const sig = new Uint8Array(data.signature).buffer;
+
           const isValid = await app.verifyWithIdentity(app.connectedPeerPubKey, sig, app.ecdsaChallenge);
           if (isValid) {
             const mySig = await app.signWithIdentity(data.myChallenge);
@@ -1039,20 +1193,49 @@ const app = {
             false,
             ["encrypt", "decrypt"]
           );
+          await app.generateFingerprint(importedPubKey);
 
           if (app.role === "receiver") {
-            const exportedMyPubKey = await crypto.subtle.exportKey("jwk", app.ecdhKeyPair.publicKey);
-            app.conn.send({ type: "ecdh_exchange", pubKey: exportedMyPubKey });
-            await app.generateFingerprint(importedPubKey);
+            app.receiveIvCounter = 0;
+
             if (!app.isStealthConnection) {
+              const exportedMyPubKey = await crypto.subtle.exportKey("jwk", app.ecdhKeyPair.publicKey);
+              app.conn.send({ type: "ecdh_exchange", pubKey: exportedMyPubKey });
+              app.hideAuthModal();
               app.toggleTransferPopup(true);
               app.updateProgress(0, "Waiting for files...");
+            } else {
+              const peerName = window.DOMPurify
+                ? window.DOMPurify.sanitize(app.connectedPeerName || "Trusted Peer")
+                : (app.connectedPeerName || "Trusted Peer");
+              const accept = await app.showDialog({
+                title: "Incoming Connection",
+                message: `${peerName} wants to connect and send files. Do you accept?`,
+                type: "confirm",
+                icon: "connection"
+              });
+              if (accept) {
+                app.toggleTransferPopup(true);
+                app.updateProgress(0, "Ready to receive...");
+                app.conn.send({ type: "ready_to_send" });
+              } else {
+                app.conn.close();
+                app.resetState();
+                app.goHome();
+              }
             }
           } else if (app.role === "sender") {
-            app.showToast("E2EE Key Established!", "success");
-            await app.generateFingerprint(importedPubKey);
             if (!app.isStealthConnection) {
+              app.showToast("E2EE Key Established!", "success");
+              app.hideAuthModal();
               setTimeout(() => app.startFileTransfer(), 500);
+            } else {
+              app.showToast("E2EE Key Established!", "success");
+              app.hideAuthModal();
+              app.toggleTransferPopup(true);
+              app.updateProgress(0, "Waiting for recipient to accept...");
+              const tit = document.querySelector("#transfer-content h3");
+              if (tit) tit.innerText = "Waiting for Approval...";
             }
           }
         } catch (e) {
@@ -1066,6 +1249,12 @@ const app = {
         return;
       } else if (data.type === "trust_accepted") {
         app.handleTrustAccepted(data);
+        return;
+      } else if (data.type === "ready_to_send") {
+        if (app.role === "sender") {
+          app.hideAuthModal();
+          app.startFileTransfer();
+        }
         return;
       }
 
@@ -1088,6 +1277,11 @@ const app = {
           app.receivedFileParts.push(decrypted);
           app.receivedBytes += decrypted.byteLength;
 
+          if (app.receivedBytes > app.receivedFileMeta.size + 65536) {
+            app.terminateTransferWithError("Protocol violation: Received data exceeds declared file size!");
+            return;
+          }
+
           const now = Date.now();
           if (!app.lastReceiverUpdate) app.lastReceiverUpdate = 0;
 
@@ -1107,7 +1301,13 @@ const app = {
       if (data.type === "file-start") {
         if (data.size > 1024 * 1024 * 512) {
           const safeName = window.DOMPurify ? window.DOMPurify.sanitize(data.name) : data.name.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-          if (!confirm(`Warning: Incoming file "${safeName}" is large (${app.formatSize(data.size)}). It might cause memory issues or crash the browser. Do you want to receive it anyway?`)) {
+          const acceptLarge = await app.showDialog({
+            title: "Large File Warning",
+            message: `Warning: Incoming file "${safeName}" is large (${app.formatSize(data.size)}). It might cause memory issues. Receive anyway?`,
+            type: "confirm"
+          });
+
+          if (!acceptLarge) {
             app.showToast("File rejected due to size.", "warning");
             app.receivedFileMeta = null;
             return;
@@ -1254,7 +1454,8 @@ const app = {
     });
   },
 
-  deleteTrustedPeer: async (publicKeyStr) => {
+  deleteTrustedPeer: async (b64PubKey) => {
+    const publicKeyStr = atob(b64PubKey);
     return new Promise((resolve, reject) => {
       const transaction = app.db.transaction("peers", "readwrite");
       const store = transaction.objectStore("peers");
@@ -1284,7 +1485,7 @@ const app = {
   },
 
   startStealthListeners: async (skipPrompt = false) => {
-    if (app.role === "sender") return;
+    if (app.isTransferring || (app.conn && app.conn.open)) return;
 
     if (app.isTransferring || (app.conn && app.conn.open)) return;
 
@@ -1293,12 +1494,16 @@ const app = {
       app.startStealthListeners(true);
     }, 10 * 60 * 1000);
 
-    app.stealthListeners.forEach(p => { if (!p.destroyed) p.destroy(); });
-    app.stealthListeners = [];
+    app.stealthListeners = (app.stealthListeners || []).filter(p => !p.destroyed);
 
     let peersToListen = app.trustedPeers;
     if (peersToListen.length > 5 && !skipPrompt) {
-      if (!confirm(`You have ${peersToListen.length} saved devices. Listening to all at once may use more resources.\n\nDo you want to listen to all of them simultaneously? (Checking 'Cancel' will queue them and listen in rotation)`)) {
+      const allAtOnce = await app.showDialog({
+        title: "Resource Management",
+        message: `You have ${peersToListen.length} saved devices. Listening to all at once may use more resources. Listen to all simultaneously?`,
+        type: "confirm"
+      });
+      if (!allAtOnce) {
         app.stealthQueueIndex = 0;
         app.startStealthRotation();
         return;
@@ -1314,8 +1519,7 @@ const app = {
     const listenNextBatch = () => {
       if (app.isTransferring || (app.conn && app.conn.open)) return;
 
-      app.stealthListeners.forEach(p => { if (!p.destroyed) p.destroy(); });
-      app.stealthListeners = [];
+      app.stealthListeners = (app.stealthListeners || []).filter(p => !p.destroyed);
 
       const batch = app.trustedPeers.slice(app.stealthQueueIndex, app.stealthQueueIndex + 5);
       app._listenToPeers(batch);
@@ -1331,10 +1535,20 @@ const app = {
   _listenToPeers: (peers) => {
     peers.forEach(async (peer) => {
       const stealthId = await app.generateStealthPeerId(peer.publicKey, 'receiver', app.clockOffset || 0);
+
+      if (app.stealthListeners.some(p => p.id === stealthId && !p.destroyed)) return;
+
       const stealthPeer = new Peer(stealthId, {
         debug: 1,
         config: { iceServers: [{ url: "stun:stun.l.google.com:19302" }] },
       });
+
+      stealthPeer.on('error', (err) => {
+        if (err.type === 'id-taken') {
+        }
+      });
+
+      app.stealthListeners.push(stealthPeer);
 
       stealthPeer.on("open", (id) => console.log("Stealth listening on: " + id));
 
@@ -1359,7 +1573,12 @@ const app = {
   },
 
   manualSyncClock: async () => {
-    const choice = confirm("Cihazınızı göremiyor musunuz? Saat farkından dolayı bağlantı kurulamıyor olabilir. Eski bağlantı ID'lerini (10 dk öncesi) dinlemek ister misiniz?\n\nTamam: -10 dk (Geçmiş)\nİptal: Normal (Şu an)");
+    const choice = await app.showDialog({
+      title: "Connection Troubleshooting",
+      message: "Can't see your device? It might be due to clock difference. Do you want to listen to previous time window (10 min ago)?",
+      type: "confirm"
+    });
+
     if (choice) {
       app.clockOffset = -1;
       app.showToast("Listening to previous time window...", "info");
@@ -1415,38 +1634,151 @@ const app = {
     const list = document.getElementById("trusted-peers-list");
     if (!list) return;
 
-    list.innerHTML = "";
+    const currentRows = list.querySelectorAll('.peer-row');
+    if (currentRows.length !== app.trustedPeers.length) {
+      list.innerHTML = "";
+    }
+
     if (app.trustedPeers.length === 0) {
       list.innerHTML = "<p class='text-slate-500 text-sm'>No saved peers</p>";
       return;
     }
 
+    const now = Date.now();
+    const isFirstRender = list.innerHTML === "";
+
     app.trustedPeers.forEach(peer => {
-      const div = document.createElement("div");
-      div.className = "flex items-center justify-between p-3 bg-slate-800 rounded-lg border border-slate-700";
+      app.peerLastSeen = app.peerLastSeen || {};
+      const lastSeen = app.peerLastSeen[peer.publicKey] || 0;
+      const isOnline = (now - lastSeen < 15000) && !!app.discoveredPeers[peer.publicKey];
+
       const safeName = window.DOMPurify ? window.DOMPurify.sanitize(peer.name) : peer.name;
-      div.innerHTML = `
-          <div class="flex items-center gap-3">
-             <div class="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center">
-                 <svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-             </div>
-             <div class="text-sm font-medium text-slate-200">${safeName}</div>
-          </div>
-          <div class="flex gap-2">
-             <button onclick="app.connectToStealthPeer(app.trustedPeers.find(p => p.publicKey === '${peer.publicKey}'))" class="text-blue-400 hover:text-blue-300 text-xs bg-blue-500/10 px-2 py-1 rounded">Connect</button>
-             <button onclick="app.deleteTrustedPeer('${peer.publicKey}')" class="text-red-400 hover:text-red-300 text-xs bg-red-500/10 px-2 py-1 rounded">Delete</button>
-          </div>
-       `;
-      list.appendChild(div);
+      const b64Key = btoa(peer.publicKey);
+      const rowId = 'peer-' + b64Key.replace(/[^a-zA-Z0-9]/g, '');
+
+      if (isFirstRender) {
+        const div = document.createElement("div");
+        div.id = rowId;
+        div.className = `peer-row flex items-center justify-between p-3 bg-slate-800 rounded-lg border ${isOnline ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-slate-700'} transition-all duration-300`;
+
+        div.innerHTML = `
+            <div class="flex items-center gap-3">
+               <div class="status-icon w-8 h-8 rounded-full ${isOnline ? 'bg-emerald-500/20' : 'bg-slate-700/50'} flex items-center justify-center relative transition-colors">
+                   ${isOnline ? '<div class="online-dot absolute -top-1 -right-1 w-3 h-3 bg-emerald-500 border-2 border-slate-800 rounded-full animate-pulse"></div>' : ''}
+                   <svg class="icon-svg w-4 h-4 ${isOnline ? 'text-emerald-400' : 'text-slate-500'} transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+               </div>
+               <div>
+                   <div class="text-sm font-medium text-slate-200">${safeName}</div>
+                   <div class="status-text text-[10px] ${isOnline ? 'text-emerald-400 font-bold' : 'text-slate-500'} uppercase tracking-tight transition-colors">${isOnline ? 'Ready to Transfer' : 'Offline'}</div>
+               </div>
+            </div>
+            <div class="flex gap-2">
+               <button class="btn-connect text-white ${isOnline ? 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-500/20 cursor-pointer' : 'bg-slate-700 opacity-40 cursor-not-allowed'} px-3 py-1.5 rounded-lg text-xs font-bold transition shadow-lg" ${isOnline ? '' : 'disabled'}>Connect</button>
+               <button class="btn-delete text-slate-500 hover:text-red-400 transition p-1.5" title="Remove Peer">
+                  <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-4v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+               </button>
+            </div>
+        `;
+
+        div.addEventListener('click', (e) => {
+          if (e.target.closest('button')) return;
+          if (!div.querySelector('.btn-connect').disabled) app.initTrustedTransfer(b64Key);
+        });
+        div.querySelector('.btn-connect').addEventListener('click', (e) => {
+          e.stopPropagation();
+          app.initTrustedTransfer(b64Key);
+        });
+        div.querySelector('.btn-delete').addEventListener('click', (e) => {
+          e.stopPropagation();
+          app.deleteTrustedPeer(b64Key);
+        });
+
+        list.appendChild(div);
+
+      } else {
+        const row = document.getElementById(rowId);
+        if (row) {
+          row.className = `peer-row flex items-center justify-between p-3 bg-slate-800 rounded-lg border ${isOnline ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-slate-700'} transition-all duration-300`;
+
+          const iconContainer = row.querySelector('.status-icon');
+          iconContainer.className = `status-icon w-8 h-8 rounded-full ${isOnline ? 'bg-emerald-500/20' : 'bg-slate-700/50'} flex items-center justify-center relative transition-colors`;
+
+          let dot = row.querySelector('.online-dot');
+          if (isOnline && !dot) {
+            iconContainer.insertAdjacentHTML('afterbegin', '<div class="online-dot absolute -top-1 -right-1 w-3 h-3 bg-emerald-500 border-2 border-slate-800 rounded-full animate-pulse"></div>');
+          } else if (!isOnline && dot) {
+            dot.remove();
+          }
+
+          row.querySelector('.icon-svg').className = `icon-svg w-4 h-4 ${isOnline ? 'text-emerald-400' : 'text-slate-500'} transition-colors`;
+
+          const statusText = row.querySelector('.status-text');
+          statusText.className = `status-text text-[10px] ${isOnline ? 'text-emerald-400 font-bold' : 'text-slate-500'} uppercase tracking-tight transition-colors`;
+          statusText.innerText = isOnline ? 'Ready to Transfer' : 'Offline';
+
+          const btnConnect = row.querySelector('.btn-connect');
+          btnConnect.className = `btn-connect text-white ${isOnline ? 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-500/20 cursor-pointer' : 'bg-slate-700 opacity-40 cursor-not-allowed'} px-3 py-1.5 rounded-lg text-xs font-bold transition shadow-lg`;
+          btnConnect.disabled = !isOnline;
+        }
+      }
     });
 
-    const syncDiv = document.createElement('div');
-    syncDiv.className = "mt-2 flex self-center justify-center w-full";
-    syncDiv.innerHTML = `<button onclick="app.manualSyncClock()" class="text-amber-400 hover:text-amber-300 text-xs flex items-center gap-1 transition">
-      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-      Cihazınızı göremiyor musunuz?
-    </button>`;
-    list.appendChild(syncDiv);
+    if (isFirstRender) {
+      const syncDiv = document.createElement('div');
+      syncDiv.className = "mt-4 flex flex-col items-center gap-2 pt-2 border-t border-white/5";
+      syncDiv.innerHTML = `
+        <p class="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Troubleshooting</p>
+        <button class="btn-sync text-slate-400 hover:text-amber-400 text-xs flex items-center gap-1.5 transition bg-slate-800/50 px-3 py-2 rounded-lg border border-slate-700 w-full justify-center">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          Can't see your device?
+        </button>`;
+      syncDiv.querySelector('.btn-sync').onclick = () => app.manualSyncClock();
+      list.appendChild(syncDiv);
+    }
+  },
+
+  initTrustedTransfer: (b64PubKey) => {
+    const publicKeyStr = atob(b64PubKey);
+    const peer = app.trustedPeers.find(p => p.publicKey === publicKeyStr);
+    if (!peer) return;
+
+    app.hideTrustedPeers();
+
+    if (app.filesToSend.length > 0) {
+      app.role = "sender";
+      app.switchView("send-view");
+    } else {
+      app.role = "receiver";
+      app.switchView("receive-view");
+    }
+
+    app.showToast(`Initiating secure direct link to ${peer.name}...`, "info");
+    app.connectToStealthPeer(peer);
+  },
+
+  oneTapConnect: (code) => {
+    app.hideTrustedPeers();
+    app.showReceive();
+    const parts = code.split('-');
+    if (parts.length === 3) {
+      document.getElementById("code-1").value = parts[0];
+      document.getElementById("code-2").value = parts[1];
+      document.getElementById("code-3").value = parts[2];
+      const fullUpperCode = `${parts[0]}${parts[1]}${parts[2]}`.toUpperCase();
+      let isTrusted = false;
+      for (const pk in app.discoveredPeers) {
+        if (app.discoveredPeers[pk] === parts.join('-')) {
+          isTrusted = true;
+          break;
+        }
+      }
+
+      if (isTrusted) {
+        app.connectToPeer();
+      } else {
+        setTimeout(() => app.requestConnection(), 300);
+      }
+    }
   },
 
   saveToIndexedDB: (id, blob) => {
@@ -1555,9 +1887,14 @@ const app = {
       div.classList.remove("scale-95");
       div.classList.add("scale-100");
     }, 10);
+
+    app.startDiscoveryLoop();
   },
 
   hideTrustedPeers: () => {
+    if (app.discoveryInterval) clearInterval(app.discoveryInterval);
+    if (app.uiRefreshInterval) clearInterval(app.uiRefreshInterval);
+
     const modal = document.getElementById("trusted-peers-modal");
     modal.classList.add("opacity-0");
     const div = modal.querySelector("div");
@@ -1566,6 +1903,43 @@ const app = {
     setTimeout(() => {
       modal.classList.add("hidden");
     }, 300);
+  },
+
+  startDiscoveryLoop: () => {
+    if (app.discoveryInterval) clearInterval(app.discoveryInterval);
+    if (app.uiRefreshInterval) clearInterval(app.uiRefreshInterval);
+    app.checkLocalPeersPresence();
+    app.discoveryInterval = setInterval(() => app.checkLocalPeersPresence(), 8000);
+    app.uiRefreshInterval = setInterval(() => {
+      app.renderTrustedPeers();
+    }, 5000);
+  },
+
+  checkLocalPeersPresence: async () => {
+    if (app.trustedPeers.length === 0) return;
+    const ipHash = app.myPublicIPHash || 'off';
+
+    app.trustedPeers.forEach(async (peer) => {
+      const peerPubKeyHash = await app._simpleHash(peer.publicKey);
+      const presenceId = `spf-p-${ipHash}-${peerPubKeyHash}`;
+
+      const tempPeer = new Peer({ debug: 1 });
+      tempPeer.on('open', () => {
+        const conn = tempPeer.connect(presenceId, { reliable: true });
+        conn.on('open', () => {
+          conn.on('data', (data) => {
+            if (data.type === 'presence_info') {
+              app.discoveredPeers[peer.publicKey] = data.code;
+              app.peerLastSeen = app.peerLastSeen || {};
+              app.peerLastSeen[peer.publicKey] = Date.now();
+              app.renderTrustedPeers();
+            }
+            tempPeer.destroy();
+          });
+        });
+        setTimeout(() => { if (!tempPeer.destroyed) tempPeer.destroy(); }, 4000);
+      });
+    });
   },
 
   toggleTransferPopup: (show) => {
@@ -1607,10 +1981,11 @@ const app = {
 
   signWithIdentity: async (dataStr) => {
     const enc = new TextEncoder();
+    const prefixedData = enc.encode("SharePeer-Auth-Prefix:" + dataStr);
     return await crypto.subtle.sign(
       { name: "ECDSA", hash: { name: "SHA-384" } },
       app.identityKeyPair.privateKey,
-      enc.encode(dataStr)
+      prefixedData
     );
   },
 
@@ -1621,11 +1996,12 @@ const app = {
       const pubKey = await crypto.subtle.importKey(
         "jwk", jwk, { name: "ECDSA", namedCurve: "P-384" }, true, ["verify"]
       );
+      const prefixedData = enc.encode("SharePeer-Auth-Prefix:" + dataStr);
       return await crypto.subtle.verify(
         { name: "ECDSA", hash: { name: "SHA-384" } },
         pubKey,
         signatureBuf,
-        enc.encode(dataStr)
+        prefixedData
       );
     } catch (err) { return false; }
   },
@@ -1647,13 +2023,6 @@ const app = {
 
     const exportedPubKey = await crypto.subtle.exportKey("jwk", app.ecdhKeyPair.publicKey);
     app.conn.send({ type: "ecdh_exchange", pubKey: exportedPubKey });
-
-    if (app.role === 'sender') {
-      setTimeout(() => app.startFileTransfer(), 500);
-    } else {
-      app.toggleTransferPopup(true);
-      app.updateProgress(0, "Waiting for files...");
-    }
   },
 
   showAuthModal: (msg) => {
@@ -1678,10 +2047,29 @@ const app = {
     const rootCont = document.getElementById('trust-prompt-container');
     if (rootCont) rootCont.innerHTML = `<span class="text-sm text-amber-400">Request Sent. Waiting...</span>`;
 
+    const name = await app.showDialog({
+      title: "Name Your Device",
+      message: "Enter a name for this device so you can identify it:",
+      type: "prompt",
+      placeholder: "Peer_" + Math.floor(Math.random() * 10000)
+    });
+
+    if (name === null) {
+      if (rootCont) {
+        rootCont.innerHTML = "";
+        const btn = document.createElement("button");
+        btn.className = "bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl text-sm font-bold w-full transition";
+        btn.innerText = "Add Device to Trusted";
+        btn.onclick = () => app.sendTrustRequest();
+        rootCont.appendChild(btn);
+      }
+      return;
+    }
+
     app.conn.send({
       type: "trust_request",
       pubKey: await app.getExportedIdentityKey(),
-      name: prompt("Enter a name for this device so you can identify it:", "Peer_" + Math.floor(Math.random() * 10000)) || "Peer"
+      name: name || "Peer"
     });
   },
 
@@ -1694,26 +2082,40 @@ const app = {
     div.innerHTML = `
       <p class="text-amber-400 text-sm font-bold mb-2">Peer wants to save you as Trusted Device</p>
       <div class="flex gap-2">
-        <button onclick="app.acceptTrustRequest('${btoa(data.pubKey)}', '${data.name}')" class="bg-amber-600 hover:bg-amber-500 text-white px-3 py-1 rounded text-xs font-bold w-full">Accept & Add</button>
+        <button class="btn-accept bg-amber-600 hover:bg-amber-500 text-white px-3 py-1 rounded text-xs font-bold w-full">Accept & Add</button>
       </div>
     `;
 
+    div.querySelector('.btn-accept').addEventListener('click', () => {
+      app.acceptTrustRequest(btoa(data.pubKey), data.name);
+    });
+
     if (document.getElementById('trust-prompt-container')) {
-      document.getElementById('trust-prompt-container').innerHTML = '';
-      document.getElementById('trust-prompt-container').appendChild(div);
+      const cont = document.getElementById('trust-prompt-container');
+      cont.innerHTML = '';
+      cont.appendChild(div);
     } else {
-      rootCont.querySelector('.grid').insertAdjacentElement('beforebegin', div);
+      const grid = rootCont.querySelector('.grid');
+      if (grid) grid.insertAdjacentElement('beforebegin', div);
+      else rootCont.appendChild(div);
     }
   },
 
   acceptTrustRequest: async (b64PubKey, peerName) => {
     const pubKey = atob(b64PubKey);
     await app.saveTrustedPeer(pubKey, peerName);
-    const myName = prompt("Enter your name for this device (so they know you):", "MyDevice") || "MyDevice";
+
+    const myName = await app.showDialog({
+      title: "Device Name",
+      message: "Enter your name for this device (so they know you):",
+      type: "prompt",
+      placeholder: "MyDevice"
+    });
+
     app.conn.send({
       type: "trust_accepted",
       pubKey: await app.getExportedIdentityKey(),
-      name: myName
+      name: myName || "MyDevice"
     });
     app.showToast("Added to Trusted Devices!", "success");
     const container = document.getElementById('trust-prompt-container') || document.getElementById('file-received-modal');
@@ -1760,6 +2162,8 @@ const app = {
     a.href = url;
 
     let dlName = fileRecord.meta.name;
+    dlName = dlName.replace(/[\\/:*?"<>|]/g, "_").replace(/\0/g, "").replace(/^\.+/, "");
+
     if (dlName.endsWith(".clipboard")) {
       dlName = dlName.replace(".clipboard", ".txt");
     }
@@ -1876,10 +2280,17 @@ const app = {
   showToast: (message, type = "info") => {
     const container = document.getElementById("toast-container");
     if (!container) return;
+    const existing = container.querySelectorAll(".toast:not(.closing)");
+    existing.forEach((t, i) => {
+      const idx = existing.length - i;
+      t.style.transform = `translateY(${idx * 16}px) scale(${1 - idx * 0.05})`;
+      t.style.opacity = (1 - idx * 0.25).toString();
+      t.style.zIndex = (100 - idx).toString();
+      t.classList.add("stack-below");
+    });
 
     const el = document.createElement("div");
-
-    let bg = "bg-slate-900/80";
+    let bg = "bg-slate-900/40";
     let border = "border-white/10";
     let icon = "";
     let shadow = "shadow-black/50";
@@ -1887,61 +2298,107 @@ const app = {
     if (type === "success") {
       border = "border-emerald-500/50";
       shadow = "shadow-emerald-500/10";
-      icon = `
-                <div class="flex-shrink-0 w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center">
-                    <svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
-                    </svg>
-                </div>
-            `;
+      icon = `<div class="flex-shrink-0 w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center"><svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" /></svg></div>`;
     } else if (type === "error") {
-      bg = "bg-red-900/40";
+      bg = "bg-red-900/20";
       border = "border-red-500/50";
       shadow = "shadow-red-500/10";
-      icon = `
-                <div class="flex-shrink-0 w-8 h-8 rounded-full bg-red-500/20 flex items-center justify-center">
-                    <svg class="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                </div>
-            `;
+      icon = `<div class="flex-shrink-0 w-8 h-8 rounded-full bg-red-500/20 flex items-center justify-center"><svg class="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M6 18L18 6M6 6l12 12" /></svg></div>`;
     } else {
       border = "border-blue-500/50";
       shadow = "shadow-blue-500/10";
-      icon = `
-                <div class="flex-shrink-0 w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center">
-                    <svg class="w-4 h-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                </div>
-            `;
+      icon = `<div class="flex-shrink-0 w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center"><svg class="w-4 h-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg></div>`;
     }
 
-    el.className = `toast backdrop-blur-xl ${bg} ${border} border ${shadow} p-3 pl-4 pr-5 rounded-2xl text-white shadow-2xl flex items-center gap-4 min-w-[320px] pointer-events-auto ring-1 ring-white/10`;
+    el.className = `toast backdrop-blur-md ${bg} ${border} border ${shadow} p-3 pl-4 pr-5 rounded-2xl text-white flex items-center gap-4 min-w-[320px] pointer-events-auto ring-1 ring-white/10 opacity-0 translate-y-[-20px] scale-95 transition-all duration-300`;
     el.innerHTML = `
             ${icon}
-            <div class="text-sm font-medium pr-2 text-slate-100">${message}</div>
-            <button class="ml-auto text-slate-500 hover:text-white transition-colors" onclick="this.parentElement.remove()">
-                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                </svg>
+            <div class="toast-text text-xs font-medium pr-2 text-slate-100 flex-grow"></div>
+            <button class="btn-close ml-auto text-slate-500 hover:text-white transition-colors">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
             </button>
         `;
 
-    container.appendChild(el);
+    el.querySelector(".toast-text").textContent = message;
+    el.querySelector(".btn-close").onclick = () => el.remove();
 
+    container.appendChild(el);
     requestAnimationFrame(() => {
-      el.classList.add("show");
+      el.style.opacity = "1";
+      el.style.transform = "translateY(0) scale(1)";
+      el.style.zIndex = "100";
     });
 
     setTimeout(() => {
-      if (!el.parentElement) return;
-      el.classList.remove("show");
+      if (el && el.parentElement) {
+        el.classList.add("closing");
+        el.style.opacity = "0";
+        el.style.transform = "translateY(-20px) scale(0.9)";
+        setTimeout(() => el.remove(), 400);
+      }
+    }, 4000);
+  },
 
+  showDialog: ({ title, message, type = "alert", placeholder = "", icon = null }) => {
+    return new Promise((resolve) => {
+      const modal = document.getElementById("custom-dialog-modal");
+      const titleEl = document.getElementById("dialog-title");
+      const msgEl = document.getElementById("dialog-message");
+      const inputCont = document.getElementById("dialog-input-container");
+      const inputEl = document.getElementById("dialog-input");
+      const btnCancel = document.getElementById("dialog-btn-cancel");
+      const btnConfirm = document.getElementById("dialog-btn-confirm");
+      const iconCont = document.getElementById("dialog-icon-container");
+
+      titleEl.innerText = title;
+      msgEl.innerText = message;
+
+      iconCont.innerHTML = "";
+      if (icon === "connection") {
+        iconCont.className = "w-16 h-16 rounded-full bg-blue-500/20 flex items-center justify-center mx-auto mb-6";
+        iconCont.innerHTML = `<svg class="w-8 h-8 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>`;
+      } else {
+        iconCont.className = "w-16 h-16 rounded-full bg-amber-500/20 flex items-center justify-center mx-auto mb-6";
+        iconCont.innerHTML = `<svg class="w-8 h-8 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>`;
+      }
+
+      if (type === "prompt") {
+        inputCont.classList.remove("hidden");
+        inputEl.value = "";
+        inputEl.placeholder = placeholder;
+        btnCancel.classList.remove("hidden");
+        btnConfirm.innerText = "Save";
+      } else if (type === "confirm") {
+        inputCont.classList.add("hidden");
+        btnCancel.classList.remove("hidden");
+        btnConfirm.innerText = "Confirm";
+      } else {
+        inputCont.classList.add("hidden");
+        btnCancel.classList.add("hidden");
+        btnConfirm.innerText = "Got it";
+      }
+
+      const closeDialog = (res) => {
+        modal.classList.add("opacity-0");
+        modal.querySelector("div").classList.add("scale-95");
+        setTimeout(() => {
+          modal.classList.add("hidden");
+          resolve(res);
+        }, 300);
+      };
+
+      btnConfirm.onclick = () => closeDialog(type === "prompt" ? inputEl.value : true);
+      btnCancel.onclick = () => closeDialog(type === "prompt" ? null : false);
+
+      modal.onclick = (e) => { if (e.target === modal) closeDialog(type === "prompt" ? null : false); };
+
+      modal.classList.remove("hidden");
       setTimeout(() => {
-        if (el.parentElement) el.remove();
-      }, 400);
-    }, 4500);
+        modal.classList.remove("opacity-0");
+        modal.querySelector("div").classList.remove("scale-95");
+        if (type === "prompt") inputEl.focus();
+      }, 10);
+    });
   },
 };
 
